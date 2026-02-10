@@ -32,7 +32,7 @@ kotlin {
     
     jvm {
         mainRun {
-            mainClass.set("com.lanrhyme.androidmic_md.MainKt")
+            mainClass.set("com.lanrhyme.micyou.MainKt")
         }
     }
     
@@ -67,11 +67,11 @@ kotlin {
 }
 
 android {
-    namespace = "com.lanrhyme.androidmic_md"
+    namespace = "com.lanrhyme.micyou"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "com.lanrhyme.androidmic_md"
+        applicationId = "com.lanrhyme.micyou"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
@@ -99,12 +99,13 @@ dependencies {
 
 compose.desktop {
     application {
-        mainClass = "com.lanrhyme.androidmic_md.MainKt"
+        mainClass = "com.lanrhyme.micyou.MainKt"
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
-            packageName = "com.lanrhyme.androidmic_md"
+            packageName = "com.lanrhyme.micyou"
             packageVersion = "1.0.0"
+            windows { iconFile.set(file("src/commonMain/composeResources/drawable/icon.ico"))}
         }
     }
 }

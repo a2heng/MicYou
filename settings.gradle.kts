@@ -1,4 +1,4 @@
-rootProject.name = "AndroidMicMd"
+rootProject.name = "MicYou"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 pluginManagement {

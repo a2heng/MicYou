@@ -1,0 +1,78 @@
+package com.lanrhyme.micyou
+
+import androidx.compose.foundation.window.WindowDraggableArea
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPosition
+import androidx.compose.ui.window.application
+import androidx.compose.ui.window.rememberWindowState
+
+fun main() {
+    application {
+        var isSettingsOpen by remember { mutableStateOf(false) }
+    
+    // Create shared ViewModel instance
+    val viewModel = remember { MainViewModel() }
+
+    // Main Window State
+    val windowState = rememberWindowState(
+        width = 700.dp, 
+        height = 280.dp,
+        position = WindowPosition(Alignment.Center)
+    )
+
+    // Main Window (Undecorated)
+    Window(
+        onCloseRequest = ::exitApplication,
+        state = windowState,
+        title = "MicYou",
+        undecorated = true,
+        transparent = true, // Allows rounded corners via Surface in DesktopHome
+        resizable = false
+    ) {
+        WindowDraggableArea {
+            App(
+                viewModel = viewModel,
+                onMinimize = { windowState.isMinimized = true },
+                onClose = ::exitApplication,
+                onOpenSettings = { isSettingsOpen = true }
+            )
+        }
+    }
+
+    // Settings Window
+    if (isSettingsOpen) {
+        val settingsState = rememberWindowState(
+            width = 500.dp,
+            height = 500.dp,
+            position = WindowPosition(Alignment.Center)
+        )
+        
+        Window(
+            onCloseRequest = { isSettingsOpen = false },
+            state = settingsState,
+            title = "Settings",
+            resizable = false
+        ) {
+            // Re-use theme logic from AppTheme but apply to settings window content
+            val themeMode by viewModel.uiState.collectAsState().let { state ->
+                derivedStateOf { state.value.themeMode }
+            }
+            val seedColor by viewModel.uiState.collectAsState().let { state ->
+                derivedStateOf { state.value.seedColor }
+            }
+            val seedColorObj = androidx.compose.ui.graphics.Color(seedColor.toInt())
+
+            AppTheme(themeMode = themeMode, seedColor = seedColorObj) {
+                DesktopSettings(
+                    viewModel = viewModel,
+                    onClose = { isSettingsOpen = false }
+                )
+            }
+        }
+    }
+}
+}
+
