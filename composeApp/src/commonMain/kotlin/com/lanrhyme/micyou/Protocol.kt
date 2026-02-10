@@ -43,12 +43,20 @@ data class AudioPacketMessageOrdered(
 )
 
 @Serializable
+data class MuteMessage(
+    @ProtoNumber(1) val isMuted: Boolean
+)
+
+@Serializable
 class ConnectMessage
+
+const val PACKET_MAGIC = 0x4D696359 // "MicY" in ASCII
 
 @OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class MessageWrapper(
     @ProtoNumber(1) val audioPacket: AudioPacketMessageOrdered? = null,
-    @ProtoNumber(2) val connect: ConnectMessage? = null
+    @ProtoNumber(2) val connect: ConnectMessage? = null,
+    @ProtoNumber(3) val mute: MuteMessage? = null
 )
 

@@ -10,6 +10,9 @@ expect class AudioEngine() {
     val audioLevels: Flow<Float>
     // 错误信息流
     val lastError: Flow<String?>
+    // 静音状态流
+    val isMuted: Flow<Boolean>
+    
     // 启动音频引擎
     suspend fun start(
         ip: String, 
@@ -43,5 +46,8 @@ expect class AudioEngine() {
     val installProgress: Flow<String?>
     // 安装驱动（仅桌面端有效）
     suspend fun installDriver()
+
+    // 设置静音状态
+    suspend fun setMute(muted: Boolean)
 }
 

@@ -10,6 +10,7 @@ import io.ktor.network.selector.*
 import io.ktor.network.sockets.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -28,16 +29,16 @@ actual class AudioEngine actual constructor() {
     actual val audioLevels: Flow<Float> = _audioLevels
     private val _lastError = MutableStateFlow<String?>(null)
     actual val lastError: Flow<String?> = _lastError
+    
+    private val _isMuted = MutableStateFlow(false)
+    actual val isMuted: Flow<Boolean> = _isMuted
+
     private var job: Job? = null
     private val startStopMutex = Mutex()
     private val proto = ProtoBuf { }
     
-    // Store context reference (In a real app, use dependency injection or Application singleton)
-    // For simplicity in this KMM setup, we'll access Application Context via reflection or a static helper if needed.
-    // However, since we don't have easy access to context here, we might need to pass it or use a global accessor.
-    // Given the structure, we will use a workaround or assume the user has a way to get context.
-    // BUT, since we are in `androidMain`, we can't easily get Activity context without passing it.
-    // Let's rely on a static ContextHelper.
+    // Channel for outgoing messages (Audio + Control)
+    private var sendChannel: Channel<MessageWrapper>? = null
     
     private val CHECK_1 = "MicYouCheck1"
     private val CHECK_2 = "MicYouCheck2"
@@ -63,6 +64,7 @@ actual class AudioEngine actual constructor() {
                 CoroutineScope(Dispatchers.IO).launch {
                     var socket: Socket? = null
                     var recorder: AudioRecord? = null
+                    sendChannel = Channel(Channel.UNLIMITED)
                     
                     try {
                         // 音频设置
@@ -83,8 +85,7 @@ actual class AudioEngine actual constructor() {
 
                         try {
                             recorder = try {
-                                // 尝试使用 UNPROCESSED (无处理源，以获得最高音质 (Android 7.0+)
-                                // 这能避免系统自带的激进降噪和回声消除破坏音质
+                                // 尝试使用 UNPROCESSED
                                 AudioRecord(
                                     MediaRecorder.AudioSource.UNPROCESSED,
                                     androidSampleRate,
@@ -93,7 +94,6 @@ actual class AudioEngine actual constructor() {
                                     minBufSize * 2
                                 )
                             } catch (e: Exception) {
-                                // 如果不支持 UNPROCESSED，回退到 MIC
                                 println("UNPROCESSED source failed, falling back to MIC: ${e.message}")
                                 AudioRecord(
                                     MediaRecorder.AudioSource.MIC,
@@ -164,10 +164,70 @@ actual class AudioEngine actual constructor() {
                         _state.value = StreamState.Streaming
                         _lastError.value = null
 
+                        // --- Writer Loop (Send Channel -> Socket) ---
+                        val writerJob = launch {
+                            for (msg in sendChannel!!) {
+                                try {
+                                    val packetBytes = proto.encodeToByteArray(MessageWrapper.serializer(), msg)
+                                    val length = packetBytes.size
+                                    output.writeInt(PACKET_MAGIC)
+                                    output.writeInt(length)
+                                    output.writeFully(packetBytes)
+                                    output.flush()
+                                } catch (e: Exception) {
+                                    println("Error writing to socket: ${e.message}")
+                                    break
+                                }
+                            }
+                        }
+
+                        // --- Reader Loop (Socket -> Receive Channel/Action) ---
+                        val readerJob = launch {
+                            try {
+                                while (isActive) {
+                                    val magic = input.readInt()
+                                    if (magic != PACKET_MAGIC) {
+                                        println("Invalid Magic: ${magic.toString(16)}")
+                                        throw java.io.IOException("Invalid Packet Magic")
+                                    }
+                                    
+                                    val length = input.readInt()
+
+                                    if (length > 0) {
+                                        val packetBytes = ByteArray(length)
+                                        input.readFully(packetBytes)
+                                        try {
+                                            val wrapper = proto.decodeFromByteArray(MessageWrapper.serializer(), packetBytes)
+                                            if (wrapper.mute != null) {
+                                                _isMuted.value = wrapper.mute.isMuted
+                                                println("Received Mute Command: ${wrapper.mute.isMuted}")
+                                            }
+                                        } catch (e: Exception) {
+                                            println("Error decoding incoming message: ${e.message}")
+                                        }
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                if (isActive && _state.value == StreamState.Streaming) {
+                                    println("Error reading from socket: ${e.message}")
+                                    // Connection issue will be handled by main loop cancellation or detection
+                                }
+                            }
+                        }
+                        
+                        // Send initial mute state
+                        sendChannel?.send(MessageWrapper(mute = MuteMessage(_isMuted.value)))
+
                         val buffer = ByteArray(minBufSize)
                         val floatBuffer = if (androidAudioFormat == AudioFormat.ENCODING_PCM_FLOAT) FloatArray(minBufSize / 4) else null
                         
+                        var sequenceNumber = 0
+
                         while (isActive) {
+                            // Check if writer/reader are still alive
+                            if (writerJob.isCancelled || writerJob.isCompleted) throw Exception("Writer job failed")
+                            // Reader failure is less critical for sending, but indicates connection loss usually.
+
                             var readBytes = 0
                             val audioData: ByteArray
 
@@ -190,33 +250,27 @@ actual class AudioEngine actual constructor() {
                                 val rms = calculateRMS(audioData, audioFormat)
                                 _audioLevels.value = rms
 
-                                // 创建数据包
-                                val packet = AudioPacketMessage(
-                                    buffer = audioData,
-                                    sampleRate = androidSampleRate,
-                                    channelCount = if (channelCount == ChannelCount.Stereo) 2 else 1,
-                                    audioFormat = audioFormat.value
-                                )
-                                
-                                // 序列化
-                                val packetBytes = proto.encodeToByteArray(AudioPacketMessage.serializer(), packet)
-                                
-                                // 写入长度 (大端序)
-                                val length = packetBytes.size
-                                output.writeByte((length shr 24).toByte())
-                                output.writeByte((length shr 16).toByte())
-                                output.writeByte((length shr 8).toByte())
-                                output.writeByte(length.toByte())
-                                
-                                // 写入数据
-                                output.writeFully(packetBytes)
+                                if (!_isMuted.value) {
+                                    // 创建数据包
+                                    val packet = AudioPacketMessage(
+                                        buffer = audioData,
+                                        sampleRate = androidSampleRate,
+                                        channelCount = if (channelCount == ChannelCount.Stereo) 2 else 1,
+                                        audioFormat = audioFormat.value
+                                    )
+                                    
+                                    val wrapper = MessageWrapper(
+                                        audioPacket = AudioPacketMessageOrdered(sequenceNumber++, packet)
+                                    )
+                                    
+                                    sendChannel?.send(wrapper)
+                                }
                             }
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         if (isActive) {
-                            // Check if it's likely a normal disconnection (EOF, socket closed, etc.)
                             val msg = e.message ?: ""
                             val isDisconnect = msg.contains("broken pipe", ignoreCase = true) ||
                                               msg.contains("connection reset", ignoreCase = true) ||
@@ -228,12 +282,12 @@ actual class AudioEngine actual constructor() {
                                 _state.value = StreamState.Error
                                 _lastError.value = "连接断开: ${e.message}"
                             } else {
-                                // Treated as normal stop
                                 println("Disconnected by remote: ${e.message}")
                             }
                         }
                     } finally {
                         try {
+                            sendChannel?.close()
                             recorder?.stop()
                             recorder?.release()
                             socket?.close()
@@ -257,6 +311,35 @@ actual class AudioEngine actual constructor() {
         jobToJoin?.join()
     }
     
+    actual fun stop() {
+        job?.cancel()
+        job = null
+        _state.value = StreamState.Idle
+    }
+    
+    actual fun setMonitoring(enabled: Boolean) {
+        // Android client typically doesn't need monitoring as it's the source
+        // Implementation can be empty or added if local feedback is needed
+    }
+
+    actual val installProgress: Flow<String?> = MutableStateFlow(null)
+    
+    actual suspend fun installDriver() {
+        // No driver installation needed on Android
+    }
+
+    actual suspend fun setMute(muted: Boolean) {
+        _isMuted.value = muted
+        // If connected, send message
+        if (_state.value == StreamState.Streaming || _state.value == StreamState.Connecting) {
+             try {
+                 sendChannel?.send(MessageWrapper(mute = MuteMessage(muted)))
+             } catch (e: Exception) {
+                 println("Failed to send mute message: ${e.message}")
+             }
+        }
+    }
+
     actual fun updateConfig(
         enableNS: Boolean,
         nsType: NoiseReductionType,
@@ -291,7 +374,6 @@ actual class AudioEngine actual constructor() {
             com.lanrhyme.micyou.AudioFormat.PCM_8BIT -> {
                 sampleCount = buffer.size
                 for (i in 0 until sampleCount) {
-                    // 8-bit PCM unsigned 0-255 -> center 128
                     val sample = (buffer[i].toInt() and 0xFF) - 128
                     val normalized = sample / 128.0
                     sum += normalized * normalized
@@ -300,36 +382,14 @@ actual class AudioEngine actual constructor() {
             else -> { // 16-bit
                 sampleCount = buffer.size / 2
                 for (i in 0 until sampleCount) {
-                     val byteIndex = i * 2
-                     val sample = ((buffer[byteIndex+1].toInt() shl 8) or (buffer[byteIndex].toInt() and 0xFF)).toShort()
-                     val normalized = sample / 32768.0
-                     sum += normalized * normalized
+                    val byteIndex = i * 2
+                    val sample = (buffer[byteIndex].toInt() and 0xFF) or
+                                 ((buffer[byteIndex + 1].toInt()) shl 8)
+                    val normalized = sample / 32768.0
+                    sum += normalized * normalized
                 }
             }
         }
-        
-        val mean = if (sampleCount > 0) sum / sampleCount else 0.0
-        return kotlin.math.sqrt(mean).toFloat().coerceIn(0f, 1f)
-    }
-
-    actual fun stop() {
-        CoroutineScope(Dispatchers.IO).launch {
-            startStopMutex.withLock {
-                job?.cancelAndJoin()
-                job = null
-            }
-        }
-    }
-
-    actual fun setMonitoring(enabled: Boolean) {
-        // Android 端不需要本地监听
-    }
-    
-    // 安装驱动进度（仅桌面端有效）
-    actual val installProgress: Flow<String?> = kotlinx.coroutines.flow.flowOf(null)
-
-    // 安装驱动（仅桌面端有效）
-    actual suspend fun installDriver() {
-        // Android 端不需要安装驱动
+        return if (sampleCount > 0) Math.sqrt(sum / sampleCount).toFloat() else 0f
     }
 }

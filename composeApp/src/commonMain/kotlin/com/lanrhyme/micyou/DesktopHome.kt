@@ -15,6 +15,8 @@ import androidx.compose.material.icons.filled.Minimize
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -274,6 +276,20 @@ fun DesktopHome(
                     modifier = Modifier.size(48.dp)
                 ) {
                     Icon(Icons.Filled.Settings, "设置")
+                }
+
+                FilledTonalIconButton(
+                    onClick = { viewModel.toggleMute() },
+                    modifier = Modifier.size(48.dp),
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = if (state.isMuted) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = if (state.isMuted) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                ) {
+                    Icon(
+                        if (state.isMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                        contentDescription = if (state.isMuted) "取消静音" else "静音"
+                    )
                 }
                 
                 Spacer(modifier = Modifier.weight(1f))

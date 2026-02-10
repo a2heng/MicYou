@@ -11,6 +11,8 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -50,6 +52,13 @@ fun MobileHome(viewModel: MainViewModel) {
             CenterAlignedTopAppBar(
                 title = { Text("MicYou") },
                 actions = {
+                    IconButton(onClick = { viewModel.toggleMute() }) {
+                        Icon(
+                            if (state.isMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                            contentDescription = if (state.isMuted) "取消静音" else "静音",
+                            tint = if (state.isMuted) MaterialTheme.colorScheme.error else LocalContentColor.current
+                        )
+                    }
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Filled.Settings, contentDescription = "设置")
                     }

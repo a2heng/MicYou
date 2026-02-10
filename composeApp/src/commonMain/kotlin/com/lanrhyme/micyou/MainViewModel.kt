@@ -53,7 +53,9 @@ data class AppUiState(
     
     val amplification: Float = 10.0f,
     
-    val autoStart: Boolean = false
+    val autoStart: Boolean = false,
+    
+    val isMuted: Boolean = false
 )
 
 class MainViewModel : ViewModel() {
@@ -150,6 +152,12 @@ class MainViewModel : ViewModel() {
                 _uiState.update { it.copy(installMessage = msg) }
             }
         }
+        
+        viewModelScope.launch {
+            audioEngine.isMuted.collect { muted ->
+                _uiState.update { it.copy(isMuted = muted) }
+            }
+        }
 
         if (getPlatform().type == PlatformType.Desktop) {
             viewModelScope.launch {
@@ -181,6 +189,13 @@ class MainViewModel : ViewModel() {
             stopStream()
         } else {
             startStream()
+        }
+    }
+
+    fun toggleMute() {
+        val newMuteState = !_uiState.value.isMuted
+        viewModelScope.launch {
+            audioEngine.setMute(newMuteState)
         }
     }
 
