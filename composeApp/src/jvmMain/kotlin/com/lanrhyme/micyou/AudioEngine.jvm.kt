@@ -6,6 +6,7 @@ import io.ktor.utils.io.*
 import io.ktor.utils.io.core.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -13,6 +14,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.protobuf.*
 import kotlinx.serialization.*
 import java.net.BindException
+import java.io.EOFException
+import java.io.IOException
 import javax.sound.sampled.*
 import kotlin.math.*
 import java.nio.ByteBuffer
@@ -38,8 +41,11 @@ actual class AudioEngine actual constructor() {
     private val CHECK_2 = "MicYouCheck2"
     
     private var serverSocket: ServerSocket? = null
+    @Volatile
+    private var activeSocket: Socket? = null
     private var monitoringLine: SourceDataLine? = null
     private var isUsingCable = false
+    private var selectorManager: SelectorManager? = null
     
     // Channel for outgoing messages (Control)
     private var sendChannel: Channel<MessageWrapper>? = null
@@ -113,15 +119,16 @@ actual class AudioEngine actual constructor() {
             } else {
                 _state.value = StreamState.Connecting
                 CoroutineScope(Dispatchers.IO).launch {
-                    val selectorManager = SelectorManager(Dispatchers.IO)
+                    selectorManager = SelectorManager(Dispatchers.IO)
                     
                     try {
-                        serverSocket = aSocket(selectorManager).tcp().bind(port = port)
+                        serverSocket = aSocket(selectorManager!!).tcp().bind(port = port)
                         val msg = "监听端口 $port"
                         println(msg)
                         
                         while (isActive) {
                             val socket = serverSocket?.accept() ?: break
+                            activeSocket = socket
                             println("接受来自 ${socket.remoteAddress} 的连接")
                             _state.value = StreamState.Streaming
                             _lastError.value = null
@@ -129,9 +136,12 @@ actual class AudioEngine actual constructor() {
                             try {
                                 handleConnection(socket)
                             } catch (e: Exception) {
-                                e.printStackTrace()
-                                _lastError.value = "连接处理错误: ${e.message}"
+                                if (!isNormalDisconnect(e)) {
+                                    e.printStackTrace()
+                                    _lastError.value = "连接处理错误: ${e.message}"
+                                }
                             } finally {
+                                activeSocket = null
                                 socket.close()
                                 _state.value = StreamState.Connecting
                             }
@@ -147,12 +157,17 @@ actual class AudioEngine actual constructor() {
                         }
                     } catch (e: Exception) {
                         if (isActive) {
-                            e.printStackTrace()
-                            _state.value = StreamState.Error
-                            _lastError.value = "服务器错误: ${e.message}"
+                            if (!isNormalDisconnect(e)) {
+                                e.printStackTrace()
+                                _state.value = StreamState.Error
+                                _lastError.value = "服务器错误: ${e.message}"
+                            }
                         }
                     } finally {
                         serverSocket?.close()
+                        serverSocket = null
+                        selectorManager?.close()
+                        selectorManager = null
                         if (_state.value != StreamState.Error) {
                             _state.value = StreamState.Idle
                         }
@@ -181,150 +196,131 @@ actual class AudioEngine actual constructor() {
 
         sendChannel = Channel(Channel.UNLIMITED)
         
-        // --- Writer Loop (Send Channel -> Socket) ---
-        val writerJob = CoroutineScope(Dispatchers.IO).launch {
-            for (msg in sendChannel!!) {
-                try {
-                    val packetBytes = proto.encodeToByteArray(MessageWrapper.serializer(), msg)
-                    val length = packetBytes.size
-                    output.writeInt(PACKET_MAGIC)
-                    output.writeInt(length)
-                    output.writeFully(packetBytes)
-                    output.flush()
-                } catch (e: Exception) {
-                    println("Error writing to socket: ${e.message}")
-                    break
+        coroutineScope {
+            val writerJob = launch(Dispatchers.IO) {
+                for (msg in sendChannel!!) {
+                    try {
+                        val packetBytes = proto.encodeToByteArray(MessageWrapper.serializer(), msg)
+                        val length = packetBytes.size
+                        output.writeInt(PACKET_MAGIC)
+                        output.writeInt(length)
+                        output.writeFully(packetBytes)
+                        output.flush()
+                    } catch (e: Exception) {
+                        break
+                    }
                 }
+            }
+        
+            sendChannel?.send(MessageWrapper(mute = MuteMessage(_isMuted.value)))
+
+            try {
+                agcEnvelope = 0f
+
+                while (currentCoroutineContext().isActive) {
+                    val magic = input.readInt()
+                    if (magic != PACKET_MAGIC) {
+                        var resyncMagic = magic
+                        while (currentCoroutineContext().isActive) {
+                            val byte = input.readByte().toInt() and 0xFF
+                            resyncMagic = (resyncMagic shl 8) or byte
+                            if (resyncMagic == PACKET_MAGIC) {
+                                break
+                            }
+                        }
+                    }
+
+                    val length = input.readInt()
+
+                    if (length > 2 * 1024 * 1024) {
+                        continue
+                    }
+
+                    if (length <= 0) continue
+
+                    val packetBytes = ByteArray(length)
+                    input.readFully(packetBytes)
+
+                    try {
+                        val wrapper: MessageWrapper = proto.decodeFromByteArray(MessageWrapper.serializer(), packetBytes)
+
+                        if (wrapper.mute != null) {
+                            _isMuted.value = wrapper.mute.isMuted
+                        }
+
+                        val audioPacket = wrapper.audioPacket?.audioPacket
+                        if (audioPacket != null) {
+                            if (monitoringLine == null) {
+                                val audioFormat = javax.sound.sampled.AudioFormat(
+                                    audioPacket.sampleRate.toFloat(),
+                                    16,
+                                    audioPacket.channelCount,
+                                    true,
+                                    false 
+                                )
+
+                                val info = DataLine.Info(SourceDataLine::class.java, audioFormat)
+
+                                val mixers = AudioSystem.getMixerInfo()
+                                val cableMixerInfo = mixers
+                                    .filter { it.name.contains("CABLE Input", ignoreCase = true) }
+                                    .find { mixerInfo ->
+                                        try {
+                                            val mixer = AudioSystem.getMixer(mixerInfo)
+                                            mixer.isLineSupported(info)
+                                        } catch (e: Exception) {
+                                            false
+                                        }
+                                    }
+
+                                if (cableMixerInfo != null) {
+                                    val mixer = AudioSystem.getMixer(cableMixerInfo)
+                                    monitoringLine = mixer.getLine(info) as SourceDataLine
+                                    isUsingCable = true
+                                } else {
+                                    monitoringLine = AudioSystem.getLine(info) as SourceDataLine
+                                    isUsingCable = false
+                                }
+
+                                monitoringLine?.open(audioFormat)
+                                monitoringLine?.start()
+                            }
+
+                            val processedBuffer = processAudio(audioPacket.buffer, audioPacket.audioFormat, audioPacket.channelCount)
+
+                            if (processedBuffer != null) {
+                                if (!isUsingCable && !isMonitoring) {
+                                    processedBuffer.fill(0.toByte())
+                                }
+
+                                monitoringLine?.write(processedBuffer, 0, processedBuffer.size)
+
+                                val rms = calculateRMS(processedBuffer)
+                                _audioLevels.value = rms
+                            }
+                        }
+                    } catch (e: Exception) {
+                    }
+                }
+            } catch (e: Exception) {
+                if (!isNormalDisconnect(e)) throw e
+            } finally {
+                writerJob.cancel()
+                sendChannel?.close()
+                sendChannel = null
+                monitoringLine?.drain()
+                monitoringLine?.close()
+                monitoringLine = null
+                try {
+                    denoiserLeft?.close()
+                    denoiserLeft = null
+                    denoiserRight?.close()
+                    denoiserRight = null
+                } catch (e: Exception) {
+                }
+                _audioLevels.value = 0f
             }
         }
-        
-        // Send initial mute state
-        sendChannel?.send(MessageWrapper(mute = MuteMessage(_isMuted.value)))
-
-        try {
-            // Reset AGC state on new connection
-            agcEnvelope = 0f
-            
-            while (currentCoroutineContext().isActive) {
-                val magic = input.readInt()
-                if (magic != PACKET_MAGIC) {
-                    println("Invalid Magic: ${magic.toString(16)}. Attempting to resync...")
-                    // Resync: Read bytes one by one until we find the magic sequence
-                    // This is a simple implementation. For better performance, use a buffer.
-                    // But since we are desynced, performance is secondary to recovery.
-                    var resyncMagic = magic
-                    while (currentCoroutineContext().isActive) {
-                         // Shift left by 8 and read new byte
-                         val byte = input.readByte().toInt() and 0xFF
-                         resyncMagic = (resyncMagic shl 8) or byte
-                         if (resyncMagic == PACKET_MAGIC) {
-                             println("Resynced!")
-                             break
-                         }
-                    }
-                }
-
-                val length = input.readInt()
-                
-                if (length > 2 * 1024 * 1024) { // 2MB limit
-                    println("Packet too large: $length. Skipping.")
-                    continue
-                }
-
-                if (length <= 0) continue
-                
-                val packetBytes = ByteArray(length)
-                input.readFully(packetBytes)
-                
-                try {
-                    val wrapper: MessageWrapper = proto.decodeFromByteArray(MessageWrapper.serializer(), packetBytes)
-                    
-                    // Handle Mute
-                    if (wrapper.mute != null) {
-                        _isMuted.value = wrapper.mute.isMuted
-                        println("Received Mute Command: ${wrapper.mute.isMuted}")
-                    }
-                    
-                    // Handle Audio
-                    val audioPacket = wrapper.audioPacket?.audioPacket
-                    if (audioPacket != null) {
-                        if (monitoringLine == null) {
-                            val audioFormat = javax.sound.sampled.AudioFormat(
-                                audioPacket.sampleRate.toFloat(),
-                                16,
-                                audioPacket.channelCount,
-                                true,
-                                false 
-                            )
-                            
-                            val info = DataLine.Info(SourceDataLine::class.java, audioFormat)
-                            
-                            val mixers = AudioSystem.getMixerInfo()
-                            val cableMixerInfo = mixers
-                                .filter { it.name.contains("CABLE Input", ignoreCase = true) }
-                                .find { mixerInfo ->
-                                    try {
-                                        val mixer = AudioSystem.getMixer(mixerInfo)
-                                        mixer.isLineSupported(info)
-                                    } catch (e: Exception) {
-                                        false
-                                    }
-                                }
-                            
-                            if (cableMixerInfo != null) {
-                                println("Found VB-Cable Input: ${cableMixerInfo.name}")
-                                val mixer = AudioSystem.getMixer(cableMixerInfo)
-                                monitoringLine = mixer.getLine(info) as SourceDataLine
-                                isUsingCable = true
-                            } else {
-                                println("VB-Cable Input mixer not found or unsupported, using default audio output.")
-                                monitoringLine = AudioSystem.getLine(info) as SourceDataLine
-                                isUsingCable = false
-                            }
-                            
-                            monitoringLine?.open(audioFormat)
-                            monitoringLine?.start()
-                        }
-                        
-                        // Process Audio
-                        val processedBuffer = processAudio(audioPacket.buffer, audioPacket.audioFormat, audioPacket.channelCount)
-                        
-                        if (processedBuffer != null) {
-                            if (!isUsingCable && !isMonitoring) {
-                                // If not using cable and not monitoring, write silence to keep the line active
-                                processedBuffer.fill(0.toByte())
-                            }
-                            
-                            monitoringLine?.write(processedBuffer, 0, processedBuffer.size)
-                            
-                            // Calculate levels (post-process)
-                            val rms = calculateRMS(processedBuffer)
-                            _audioLevels.value = rms
-                        }
-                    }
-                    
-                } catch (e: Exception) {
-                    println("Packet decode error: ${e.message}")
-                    println("Hex: ${packetBytes.joinToString("") { "%02x".format(it) }}")
-                }
-            }
-        } finally {
-                        writerJob.cancel()
-                        sendChannel?.close()
-                        monitoringLine?.drain()
-                        monitoringLine?.close()
-                        monitoringLine = null
-                        
-                        // Close denoisers
-                        try {
-                            denoiserLeft?.close()
-                            denoiserLeft = null
-                            denoiserRight?.close()
-                            denoiserRight = null
-                        } catch (e: Exception) {
-                            println("Error closing denoisers: ${e.message}")
-                        }
-                    }
     }
     
     actual suspend fun setMute(muted: Boolean) {
@@ -343,11 +339,34 @@ actual class AudioEngine actual constructor() {
 
     actual fun stop() {
          try {
+             job?.cancel()
+             job = null
+             activeSocket?.close()
+             activeSocket = null
+             sendChannel?.close()
+             sendChannel = null
              serverSocket?.close()
-             // Job cancellation will be handled by the scope in start() or UI
+             serverSocket = null
+             selectorManager?.close()
+             selectorManager = null
+             _lastError.value = null
+             _state.value = StreamState.Idle
          } catch (e: Exception) {
              e.printStackTrace()
          }
+    }
+
+    private fun isNormalDisconnect(e: Throwable): Boolean {
+        if (e is kotlinx.coroutines.CancellationException) return true
+        if (e is EOFException) return true
+        if (e is ClosedReceiveChannelException) return true
+        if (e is IOException) {
+            val msg = e.message ?: ""
+            if (msg.contains("Socket closed", ignoreCase = true)) return true
+            if (msg.contains("Connection reset", ignoreCase = true)) return true
+            if (msg.contains("Broken pipe", ignoreCase = true)) return true
+        }
+        return false
     }
     
     private fun processAudio(buffer: ByteArray, format: Int, channelCount: Int): ByteArray? {

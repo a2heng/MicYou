@@ -141,9 +141,7 @@ class MainViewModel : ViewModel() {
         
         viewModelScope.launch {
             audioEngine.lastError.collect { error ->
-                if (error != null) {
-                     _uiState.update { it.copy(errorMessage = error) }
-                }
+                _uiState.update { it.copy(errorMessage = error) }
             }
         }
         
@@ -327,4 +325,3 @@ class MainViewModel : ViewModel() {
         settings.putBoolean("auto_start", enabled)
     }
 }
-

@@ -5,27 +5,34 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -40,7 +47,6 @@ fun MobileHome(viewModel: MainViewModel) {
 
     if (showSettings) {
         ModalBottomSheet(onDismissRequest = { showSettings = false }) {
-             // Wrap in Box to give it some height if needed, or just let it fill
              Box(modifier = Modifier.fillMaxWidth().wrapContentHeight()) {
                  DesktopSettings(viewModel = viewModel, onClose = { showSettings = false })
              }
@@ -50,19 +56,24 @@ fun MobileHome(viewModel: MainViewModel) {
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("MicYou") },
-                actions = {
-                    IconButton(onClick = { viewModel.toggleMute() }) {
-                        Icon(
-                            if (state.isMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
-                            contentDescription = if (state.isMuted) "取消静音" else "静音",
-                            tint = if (state.isMuted) MaterialTheme.colorScheme.error else LocalContentColor.current
+                title = { 
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("MicYou", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "IP: ${platform.ipAddress}", 
+                            style = MaterialTheme.typography.bodySmall, 
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                },
+                actions = {
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Filled.Settings, contentDescription = "设置")
                     }
-                }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background
+                )
             )
         }
     ) { padding ->
@@ -73,120 +84,170 @@ fun MobileHome(viewModel: MainViewModel) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-             // Card 1: Status & Info
+             // 1. Connection Config Card
              Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                shape = RoundedCornerShape(24.dp)
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                    modifier = Modifier.padding(20.dp).fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    // IP Info
-                    SelectionContainer {
-                         Text("本机 IP: ${platform.ipAddress}", style = MaterialTheme.typography.bodySmall)
-                    }
-
                     // Mode Selection
-                    Text("连接方式", style = MaterialTheme.typography.labelSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(
-                            selected = state.mode == ConnectionMode.Wifi,
-                            onClick = { viewModel.setMode(ConnectionMode.Wifi) },
-                            label = { Text("Wi-Fi (TCP)") },
-                            leadingIcon = { if (state.mode == ConnectionMode.Wifi) Icon(Icons.Filled.Check, null) else null }
-                        )
-                        FilterChip(
-                            selected = state.mode == ConnectionMode.WifiUdp,
-                            onClick = { viewModel.setMode(ConnectionMode.WifiUdp) },
-                            label = { Text("Wi-Fi (UDP)") },
-                            leadingIcon = { if (state.mode == ConnectionMode.WifiUdp) Icon(Icons.Filled.Check, null) else null }
-                        )
-                        FilterChip(
-                            selected = state.mode == ConnectionMode.Usb,
-                            onClick = { viewModel.setMode(ConnectionMode.Usb) },
-                            label = { Text("USB (ADB)") },
-                            leadingIcon = { if (state.mode == ConnectionMode.Usb) Icon(Icons.Filled.Check, null) else null }
-                        )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("连接模式", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                             val modes = listOf(
+                                 ConnectionMode.Wifi to "Wi-Fi",
+                                 ConnectionMode.WifiUdp to "UDP",
+                                 ConnectionMode.Usb to "USB"
+                             )
+                             
+                             modes.forEach { (mode, label) ->
+                                 FilterChip(
+                                     selected = state.mode == mode,
+                                     onClick = { viewModel.setMode(mode) },
+                                     label = { Text(label) },
+                                     leadingIcon = { 
+                                         if (state.mode == mode) Icon(Icons.Filled.Check, null, modifier = Modifier.size(16.dp)) 
+                                         else null
+                                     },
+                                     modifier = Modifier.weight(1f),
+                                     shape = CircleShape
+                                 )
+                             }
+                        }
                     }
 
                     // Inputs
-                    if (state.mode == ConnectionMode.Wifi) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (isClient) {
                              OutlinedTextField(
                                 value = state.ipAddress,
                                 onValueChange = { viewModel.setIp(it) },
-                                label = { Text("目标 IP") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true
+                                label = { Text(if (state.mode == ConnectionMode.Usb) "目标 IP (127.0.0.1)" else "目标 IP") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                shape = RoundedCornerShape(12.dp),
+                                textStyle = MaterialTheme.typography.bodyMedium
                             )
                         }
                          OutlinedTextField(
                             value = state.port,
                             onValueChange = { viewModel.setPort(it) },
                             label = { Text("端口") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
+                            modifier = if (isClient) Modifier.width(100.dp) else Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            textStyle = MaterialTheme.typography.bodyMedium
                         )
-                    } else {
-                        // USB Instructions
-                         if (isClient) {
-                            Text("请连接 USB 并执行 adb reverse tcp:6000 tcp:6000", style = MaterialTheme.typography.bodySmall)
-                             OutlinedTextField(
-                                value = state.ipAddress,
-                                onValueChange = { viewModel.setIp(it) },
-                                label = { Text("目标 IP (127.0.0.1)") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true
-                            )
-                        } else {
-                            Text("等待 ADB 连接...", style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                    
-                    // Status
-                    val statusText = when(state.streamState) {
-                        StreamState.Idle -> "空闲"
-                        StreamState.Connecting -> "连接中..."
-                        StreamState.Streaming -> "正在串流"
-                        StreamState.Error -> "错误"
-                    }
-                    Text("状态: $statusText", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
-
-                    if (state.errorMessage != null) {
-                        Text(state.errorMessage ?: "", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                     }
                 }
              }
+
+             // 2. Mute Card (New Position)
+             Card(
+                onClick = { viewModel.toggleMute() },
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (state.isMuted) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainer
+                ),
+                shape = RoundedCornerShape(24.dp)
+             ) {
+                 Row(
+                     modifier = Modifier.padding(20.dp).fillMaxWidth(),
+                     horizontalArrangement = Arrangement.Center,
+                     verticalAlignment = Alignment.CenterVertically
+                 ) {
+                     Icon(
+                         if (state.isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                         contentDescription = null,
+                         modifier = Modifier.size(28.dp),
+                         tint = if (state.isMuted) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface
+                     )
+                     Spacer(modifier = Modifier.width(16.dp))
+                     Text(
+                         text = if (state.isMuted) "取消静音" else "静音",
+                         style = MaterialTheme.typography.titleMedium,
+                         color = if (state.isMuted) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface
+                     )
+                 }
+             }
              
-             // Card 2: Control
+             // 3. Main Control Area (Expands to fill space)
              Card(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                shape = RoundedCornerShape(32.dp)
             ) {
                  Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     val isRunning = state.streamState == StreamState.Streaming
                     val isConnecting = state.streamState == StreamState.Connecting
                     
-                    // Visuals
+                    // Status Text at top of card
+                    Box(modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp)) {
+                        val (statusColor, statusText) = when(state.streamState) {
+                            StreamState.Idle -> MaterialTheme.colorScheme.onSurfaceVariant to "点击开始"
+                            StreamState.Connecting -> MaterialTheme.colorScheme.primary to "连接中..."
+                            StreamState.Streaming -> MaterialTheme.colorScheme.primary to "正在传输音频"
+                            StreamState.Error -> MaterialTheme.colorScheme.error to (state.errorMessage ?: "连接错误")
+                        }
+                        
+                        Surface(
+                            color = statusColor.copy(alpha = 0.1f),
+                            contentColor = statusColor,
+                            shape = CircleShape
+                        ) {
+                            Text(
+                                text = statusText,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                        }
+                    }
+
+                    // Visualizer Background
                     if (isRunning) {
+                        // Outer Ripple
+                         Box(
+                            modifier = Modifier
+                                .size(240.dp)
+                                .background(
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f * (audioLevel * 2).coerceAtMost(1f)),
+                                    shape = CircleShape
+                                )
+                        )
+                        
                         CircularProgressIndicator(
                             progress = { audioLevel },
-                            modifier = Modifier.fillMaxWidth(0.6f).aspectRatio(1f),
-                            strokeWidth = 8.dp,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.5f),
-                            trackColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.1f),
+                            modifier = Modifier.size(200.dp),
+                            strokeWidth = 12.dp,
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                            trackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
                         )
                     }
                     
-                    // Button
-                    val buttonSize by animateDpAsState(if (isRunning) 96.dp else 80.dp)
+                    // Main Button with Bounce Animation
+                    val buttonSize by animateDpAsState(if (isRunning) 110.dp else 90.dp)
                     val buttonColor by animateColorAsState(
                         when {
                             isRunning -> MaterialTheme.colorScheme.error
-                            isConnecting -> MaterialTheme.colorScheme.primary
+                            isConnecting -> MaterialTheme.colorScheme.secondary
                             else -> MaterialTheme.colorScheme.primary
                         }
+                    )
+                    
+                    // Bounce Animation
+                    val interactionSource = remember { MutableInteractionSource() }
+                    val isPressed by interactionSource.collectIsPressedAsState()
+                    val scale by animateFloatAsState(
+                        targetValue = if (isPressed) 0.9f else 1f,
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
                     )
                     
                     // Rotation Animation for Connecting
@@ -199,40 +260,38 @@ fun MobileHome(viewModel: MainViewModel) {
                         ),
                         label = "ConnectionSpinner"
                     )
-                    val rotation = if (isConnecting) angle else 0f
                     
-                    var rippleTrigger by remember { mutableStateOf(0) }
-
-                    Box(contentAlignment = Alignment.Center) {
-                        WaterRippleEffect(
-                            trigger = rippleTrigger,
-                            modifier = Modifier.size(buttonSize),
-                            color = Color.White
-                        )
-                        
-                        IconButton(
-                            onClick = { 
-                                rippleTrigger++
-                                viewModel.toggleStream() 
-                            },
-                            modifier = Modifier.size(buttonSize).background(buttonColor, CircleShape)
-                        ) {
-                            val icon = when {
-                                isRunning -> Icons.Filled.MicOff
-                                isConnecting -> Icons.Filled.Refresh
-                                else -> Icons.Filled.Mic
+                    FloatingActionButton(
+                        onClick = {
+                            if (isRunning || isConnecting) {
+                                viewModel.stopStream()
+                            } else {
+                                viewModel.startStream()
                             }
-
+                        },
+                        interactionSource = interactionSource,
+                        containerColor = buttonColor,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(buttonSize).scale(scale),
+                        shape = CircleShape,
+                        elevation = FloatingActionButtonDefaults.elevation(8.dp)
+                    ) {
+                        if (isConnecting) {
                             Icon(
-                                icon,
-                                contentDescription = "Toggle Stream",
-                                modifier = Modifier.size(40.dp).rotate(rotation),
-                                tint = MaterialTheme.colorScheme.onPrimary
+                                Icons.Filled.Refresh, 
+                                "连接中", 
+                                modifier = Modifier.size(40.dp).rotate(angle)
+                            )
+                        } else {
+                            Icon(
+                                if (isRunning) Icons.Filled.MicOff else Icons.Filled.Mic,
+                                contentDescription = if (isRunning) "停止" else "开始",
+                                modifier = Modifier.size(40.dp)
                             )
                         }
                     }
-                 }
-            }
+                }
+             }
         }
     }
 }
