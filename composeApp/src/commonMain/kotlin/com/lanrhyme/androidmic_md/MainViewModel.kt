@@ -36,6 +36,18 @@ class MainViewModel : ViewModel() {
                 _uiState.update { it.copy(streamState = state) }
             }
         }
+        
+        viewModelScope.launch {
+            audioEngine.lastError.collect { error ->
+                if (error != null) {
+                     _uiState.update { it.copy(errorMessage = error) }
+                }
+            }
+        }
+
+        if (getPlatform().type == PlatformType.Desktop) {
+            startStream()
+        }
     }
 
     fun toggleStream() {

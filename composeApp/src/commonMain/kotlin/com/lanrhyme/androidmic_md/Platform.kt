@@ -7,6 +7,7 @@ enum class PlatformType {
 interface Platform {
     val name: String
     val type: PlatformType
+    val ipAddress: String
 }
 
 expect fun getPlatform(): Platform

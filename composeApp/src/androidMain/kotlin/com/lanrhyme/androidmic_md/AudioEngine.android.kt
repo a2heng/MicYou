@@ -12,6 +12,8 @@ import io.ktor.utils.io.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.protobuf.*
 
 actual class AudioEngine actual constructor() {
@@ -19,7 +21,10 @@ actual class AudioEngine actual constructor() {
     actual val streamState: Flow<StreamState> = _state
     private val _audioLevels = MutableStateFlow(0f)
     actual val audioLevels: Flow<Float> = _audioLevels
+    private val _lastError = MutableStateFlow<String?>(null)
+    actual val lastError: Flow<String?> = _lastError
     private var job: Job? = null
+    private val startStopMutex = Mutex()
     private val proto = ProtoBuf { }
 
     private val CHECK_1 = "AndroidMic1"
@@ -27,110 +32,129 @@ actual class AudioEngine actual constructor() {
 
     actual suspend fun start(ip: String, port: Int, mode: ConnectionMode, isClient: Boolean) {
         if (!isClient) return
+        _lastError.value = null
 
-        _state.value = StreamState.Connecting
-        job = CoroutineScope(Dispatchers.IO).launch {
-            var socket: Socket? = null
-            var recorder: AudioRecord? = null
-            
-            try {
-                // 音频设置
-                val sampleRate = 44100
-                val channelConfig = AudioFormat.CHANNEL_IN_MONO
-                val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-                val minBufSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+        val jobToJoin = startStopMutex.withLock {
+            val currentJob = job
+            if (currentJob != null && !currentJob.isCompleted) {
+                null
+            } else {
+                _state.value = StreamState.Connecting
+                CoroutineScope(Dispatchers.IO).launch {
+                    var socket: Socket? = null
+                    var recorder: AudioRecord? = null
+                    
+                    try {
+                        // 音频设置
+                        val sampleRate = 44100
+                        val channelConfig = AudioFormat.CHANNEL_IN_MONO
+                        val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+                        val minBufSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
 
-                recorder = try {
-                    AudioRecord(
-                        MediaRecorder.AudioSource.MIC,
-                        sampleRate,
-                        channelConfig,
-                        audioFormat,
-                        minBufSize * 2
-                    )
-                } catch (e: SecurityException) {
-                    e.printStackTrace()
-                    _state.value = StreamState.Error
-                    return@launch
-                }
+                        recorder = try {
+                            AudioRecord(
+                                MediaRecorder.AudioSource.MIC,
+                                sampleRate,
+                                channelConfig,
+                                audioFormat,
+                                minBufSize * 2
+                            )
+                        } catch (e: SecurityException) {
+                            e.printStackTrace()
+                            _state.value = StreamState.Error
+                            _lastError.value = "录音权限不足"
+                            return@launch
+                        }
 
-                if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-                    println("AudioRecord 初始化失败")
-                    _state.value = StreamState.Error
-                    return@launch
-                }
+                        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                            val msg = "AudioRecord 初始化失败"
+                            println(msg)
+                            _state.value = StreamState.Error
+                            _lastError.value = msg
+                            return@launch
+                        }
 
-                // 网络设置
-                val selectorManager = SelectorManager(Dispatchers.IO)
-                socket = aSocket(selectorManager).tcp().connect(ip, port)
-                val output = socket.openWriteChannel(autoFlush = true)
-                val input = socket.openReadChannel()
+                        // 网络设置
+                        val selectorManager = SelectorManager(Dispatchers.IO)
+                        socket = aSocket(selectorManager).tcp().connect(ip, port)
+                        val output = socket.openWriteChannel(autoFlush = true)
+                        val input = socket.openReadChannel()
 
-                // 握手
-                output.writeFully(CHECK_1.encodeToByteArray())
-                output.flush()
+                        // 握手
+                        output.writeFully(CHECK_1.encodeToByteArray())
+                        output.flush()
 
-                val responseBuffer = ByteArray(CHECK_2.length)
-                val read = input.readAvailable(responseBuffer)
-                
-                if (read != CHECK_2.length || !responseBuffer.decodeToString().equals(CHECK_2)) {
-                    println("握手失败")
-                    _state.value = StreamState.Error
-                    socket.close()
-                    return@launch
-                }
+                        val responseBuffer = ByteArray(CHECK_2.length)
+                        input.readFully(responseBuffer, 0, responseBuffer.size)
 
-                recorder.startRecording()
-                _state.value = StreamState.Streaming
+                        if (!responseBuffer.decodeToString().equals(CHECK_2)) {
+                            val msg = "握手失败"
+                            println(msg)
+                            _state.value = StreamState.Error
+                            _lastError.value = msg
+                            socket.close()
+                            return@launch
+                        }
 
-                val buffer = ByteArray(minBufSize)
-                
-                while (isActive) {
-                    val readBytes = recorder.read(buffer, 0, buffer.size)
-                    if (readBytes > 0) {
-                        val audioData = buffer.copyOfRange(0, readBytes)
+                        recorder.startRecording()
+                        _state.value = StreamState.Streaming
+                        _lastError.value = null
+
+                        val buffer = ByteArray(minBufSize)
                         
-                        // 创建数据包
-                        val packet = AudioPacketMessage(
-                            buffer = audioData,
-                            sampleRate = sampleRate,
-                            channelCount = 1,
-                            audioFormat = 16 
-                        )
-                        
-                        // 序列化
-                        val packetBytes = proto.encodeToByteArray(AudioPacketMessage.serializer(), packet)
-                        
-                        // 写入长度 (大端序)
-                        val length = packetBytes.size
-                        output.writeByte((length shr 24).toByte())
-                        output.writeByte((length shr 16).toByte())
-                        output.writeByte((length shr 8).toByte())
-                        output.writeByte(length.toByte())
-                        
-                        // 写入数据
-                        output.writeFully(packetBytes)
-                        
-                        // 计算电平
-                        val rms = calculateRMS(audioData)
-                        _audioLevels.value = rms
+                        while (isActive) {
+                            val readBytes = recorder.read(buffer, 0, buffer.size)
+                            if (readBytes > 0) {
+                                val audioData = buffer.copyOfRange(0, readBytes)
+                                
+                                // 创建数据包
+                                val packet = AudioPacketMessage(
+                                    buffer = audioData,
+                                    sampleRate = sampleRate,
+                                    channelCount = 1,
+                                    audioFormat = 16 
+                                )
+                                
+                                // 序列化
+                                val packetBytes = proto.encodeToByteArray(AudioPacketMessage.serializer(), packet)
+                                
+                                // 写入长度 (大端序)
+                                val length = packetBytes.size
+                                output.writeByte((length shr 24).toByte())
+                                output.writeByte((length shr 16).toByte())
+                                output.writeByte((length shr 8).toByte())
+                                output.writeByte(length.toByte())
+                                
+                                // 写入数据
+                                output.writeFully(packetBytes)
+                                
+                                // 计算电平
+                                val rms = calculateRMS(audioData)
+                                _audioLevels.value = rms
+                            }
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        if (isActive) {
+                            e.printStackTrace()
+                            _state.value = StreamState.Error
+                            _lastError.value = "连接断开: ${e.message}"
+                        }
+                    } finally {
+                        try {
+                            recorder?.stop()
+                            recorder?.release()
+                            socket?.close()
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                        _state.value = StreamState.Idle
                     }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                _state.value = StreamState.Error
-            } finally {
-                try {
-                    recorder?.stop()
-                    recorder?.release()
-                    socket?.close()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-                _state.value = StreamState.Idle
+                }.also { job = it }
             }
         }
-        job?.join()
+        jobToJoin?.join()
     }
     
     private fun calculateRMS(buffer: ByteArray): Float {
@@ -146,6 +170,16 @@ actual class AudioEngine actual constructor() {
     }
 
     actual fun stop() {
-        job?.cancel()
+        CoroutineScope(Dispatchers.IO).launch {
+            val jobToCancel = startStopMutex.withLock {
+                job?.also { it.cancel() }
+            }
+            jobToCancel?.join()
+            startStopMutex.withLock {
+                if (job === jobToCancel) {
+                    job = null
+                }
+            }
+        }
     }
 }

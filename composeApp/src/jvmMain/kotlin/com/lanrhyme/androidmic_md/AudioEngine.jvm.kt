@@ -7,6 +7,8 @@ import io.ktor.utils.io.core.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.protobuf.*
 import kotlinx.serialization.*
 import javax.sound.sampled.*
@@ -17,45 +19,68 @@ actual class AudioEngine actual constructor() {
     actual val streamState: Flow<StreamState> = _state
     private val _audioLevels = MutableStateFlow(0f)
     actual val audioLevels: Flow<Float> = _audioLevels
+    private val _lastError = MutableStateFlow<String?>(null)
+    actual val lastError: Flow<String?> = _lastError
     private var job: Job? = null
+    private val startStopMutex = Mutex()
     private val proto = ProtoBuf { }
     private val CHECK_1 = "AndroidMic1"
     private val CHECK_2 = "AndroidMic2"
 
     actual suspend fun start(ip: String, port: Int, mode: ConnectionMode, isClient: Boolean) {
         if (isClient) return 
+        _lastError.value = null // 清除之前的错误
 
-        _state.value = StreamState.Connecting
-        job = CoroutineScope(Dispatchers.IO).launch {
-            val selectorManager = SelectorManager(Dispatchers.IO)
-            var serverSocket: ServerSocket? = null
-            
-            try {
-                serverSocket = aSocket(selectorManager).tcp().bind(port = port)
-                println("监听端口 $port")
-                
-                while (isActive) {
-                    val socket = serverSocket.accept()
-                    println("接受来自 ${socket.remoteAddress} 的连接")
-                    _state.value = StreamState.Streaming
+        val jobToJoin = startStopMutex.withLock {
+            val currentJob = job
+            if (currentJob != null && !currentJob.isCompleted) {
+                null
+            } else {
+                _state.value = StreamState.Connecting
+                CoroutineScope(Dispatchers.IO).launch {
+                    val selectorManager = SelectorManager(Dispatchers.IO)
+                    var serverSocket: ServerSocket? = null
                     
                     try {
-                        handleConnection(socket)
+                        serverSocket = aSocket(selectorManager).tcp().bind(port = port)
+                        val msg = "监听端口 $port"
+                        println(msg)
+                        // 可以选择是否显示监听成功信息，这里暂不视为错误
+                        
+                        while (isActive) {
+                            val socket = serverSocket.accept()
+                            println("接受来自 ${socket.remoteAddress} 的连接")
+                            _state.value = StreamState.Streaming
+                            _lastError.value = null
+                            
+                            try {
+                                handleConnection(socket)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                _lastError.value = "连接处理错误: ${e.message}"
+                            } finally {
+                                socket.close()
+                                _state.value = StreamState.Connecting
+                            }
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
                     } catch (e: Exception) {
-                        e.printStackTrace()
+                        if (isActive) {
+                            e.printStackTrace()
+                            _state.value = StreamState.Error
+                            _lastError.value = "服务器错误: ${e.message}"
+                        }
                     } finally {
-                        socket.close()
-                        _state.value = StreamState.Idle 
+                        serverSocket?.close()
+                        if (_state.value != StreamState.Error) {
+                            _state.value = StreamState.Idle
+                        }
                     }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                _state.value = StreamState.Error
-            } finally {
-                serverSocket?.close()
+                }.also { job = it }
             }
         }
-        job?.join()
+        jobToJoin?.join()
     }
 
     private suspend fun handleConnection(socket: Socket) {
@@ -77,10 +102,10 @@ actual class AudioEngine actual constructor() {
         var line: SourceDataLine? = null
         
         try {
+            val lengthBytes = ByteArray(4)
             while (currentCoroutineContext().isActive) {
                 // 读取长度 (4字节)
-                val lengthPacket = input.readPacket(4)
-                val lengthBytes = lengthPacket.readBytes()
+                input.readFully(lengthBytes, 0, lengthBytes.size)
                 
                 // 大端序
                 val length = ((lengthBytes[0].toInt() and 0xFF) shl 24) or
@@ -91,7 +116,8 @@ actual class AudioEngine actual constructor() {
                 if (length <= 0) continue
                 
                 // 读取数据包
-                val packetBytes = input.readPacket(length).readBytes()
+                val packetBytes = ByteArray(length)
+                input.readFully(packetBytes, 0, packetBytes.size)
                 
                 try {
                     val packet: AudioPacketMessage = proto.decodeFromByteArray(AudioPacketMessage.serializer(), packetBytes)
@@ -140,6 +166,16 @@ actual class AudioEngine actual constructor() {
     }
 
     actual fun stop() {
-        job?.cancel()
+        CoroutineScope(Dispatchers.IO).launch {
+            val jobToCancel = startStopMutex.withLock {
+                job?.also { it.cancel() }
+            }
+            jobToCancel?.join()
+            startStopMutex.withLock {
+                if (job === jobToCancel) {
+                    job = null
+                }
+            }
+        }
     }
 }
