@@ -31,7 +31,7 @@ data class AppUiState(
     val port: String = "6000",
     val errorMessage: String? = null,
     val themeMode: ThemeMode = ThemeMode.System,
-    val seedColor: Long = 0xFF6750A4, 
+    val seedColor: Long = 0xFF6750A4,
     val monitoringEnabled: Boolean = false,
     val sampleRate: SampleRate = SampleRate.Rate44100,
     val channelCount: ChannelCount = ChannelCount.Mono,
@@ -51,7 +51,7 @@ data class AppUiState(
     val enableDereverb: Boolean = false,
     val dereverbLevel: Float = 0.5f,
     
-    val amplification: Float = 1.0f
+    val amplification: Float = 10.0f
 )
 
 class MainViewModel : ViewModel() {
@@ -76,14 +76,14 @@ class MainViewModel : ViewModel() {
         
         val savedMonitoring = settings.getBoolean("monitoring_enabled", false)
 
-        val savedSampleRateName = settings.getString("sample_rate", SampleRate.Rate44100.name)
-        val savedSampleRate = try { SampleRate.valueOf(savedSampleRateName) } catch(e: Exception) { SampleRate.Rate44100 }
+        val savedSampleRateName = settings.getString("sample_rate", SampleRate.Rate48000.name)
+        val savedSampleRate = try { SampleRate.valueOf(savedSampleRateName) } catch(e: Exception) { SampleRate.Rate48000 }
 
-        val savedChannelCountName = settings.getString("channel_count", ChannelCount.Mono.name)
-        val savedChannelCount = try { ChannelCount.valueOf(savedChannelCountName) } catch(e: Exception) { ChannelCount.Mono }
+        val savedChannelCountName = settings.getString("channel_count", ChannelCount.Stereo.name)
+        val savedChannelCount = try { ChannelCount.valueOf(savedChannelCountName) } catch(e: Exception) { ChannelCount.Stereo }
 
-        val savedAudioFormatName = settings.getString("audio_format", AudioFormat.PCM_16BIT.name)
-        val savedAudioFormat = try { AudioFormat.valueOf(savedAudioFormatName) } catch(e: Exception) { AudioFormat.PCM_16BIT }
+        val savedAudioFormatName = settings.getString("audio_format", AudioFormat.PCM_FLOAT.name)
+        val savedAudioFormat = try { AudioFormat.valueOf(savedAudioFormatName) } catch(e: Exception) { AudioFormat.PCM_FLOAT }
 
         val savedNS = settings.getBoolean("enable_ns", false)
         val savedNSTypeName = settings.getString("ns_type", NoiseReductionType.RNNoise.name)
@@ -98,7 +98,7 @@ class MainViewModel : ViewModel() {
         val savedDereverb = settings.getBoolean("enable_dereverb", false)
         val savedDereverbLevel = settings.getFloat("dereverb_level", 0.5f)
         
-        val savedAmplification = settings.getFloat("amplification", 1.0f)
+        val savedAmplification = settings.getFloat("amplification", 10.0f)
 
         _uiState.update { 
             it.copy(

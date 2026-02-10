@@ -48,7 +48,10 @@ actual class AudioEngine actual constructor() {
     @Volatile private var vadThreshold: Int = 10
     @Volatile private var enableDereverb: Boolean = false
     @Volatile private var dereverbLevel: Float = 0.5f
-    @Volatile private var amplification: Float = 1.0f
+    @Volatile private var amplification: Float = 10.0f
+    
+    // Internal Audio Processing State
+    private var agcEnvelope: Float = 0f
 
     actual val installProgress: Flow<String?> = VBCableManager.installProgress
     
@@ -167,6 +170,9 @@ actual class AudioEngine actual constructor() {
 
         try {
             val lengthBytes = ByteArray(4)
+            // Reset AGC state on new connection
+            agcEnvelope = 0f
+            
             while (currentCoroutineContext().isActive) {
                 input.readFully(lengthBytes, 0, lengthBytes.size)
                 
@@ -309,41 +315,43 @@ actual class AudioEngine actual constructor() {
             }
         }
         
-        // 3. AGC (Simple Peak Normalization towards target)
+        // 3. AGC (Adaptive Gain Control with Envelope Follower)
         if (enableAGC) {
-            var peak = 0
+            var maxAbs = 0
             for (s in shorts) {
                 val absS = abs(s.toInt())
-                if (absS > peak) peak = absS
+                if (absS > maxAbs) maxAbs = absS
             }
             
-            if (peak > 0) {
-                val target = agcTargetLevel
-                if (peak > 100) { // Noise floor check
-                     val gain = target.toFloat() / peak.toFloat()
-                     val clampedGain = gain.coerceIn(0.1f, 10.0f) 
-                     
-                     for (i in shorts.indices) {
-                         var s = (shorts[i] * clampedGain).toInt()
-                         if (s > 32767) s = 32767
-                         if (s < -32768) s = -32768
-                         shorts[i] = s.toShort()
-                     }
-                }
+            // Update Envelope (Fast Attack, Slow Decay)
+            if (maxAbs > agcEnvelope) {
+                agcEnvelope = maxAbs.toFloat()
+            } else {
+                agcEnvelope = agcEnvelope * 0.995f + maxAbs * 0.005f
+            }
+            
+            // Avoid division by zero and extreme boosts for silence
+            // Floor at 100 (approx -50dB) to avoid boosting background noise too much
+            val safeEnvelope = if (agcEnvelope < 100f) 100f else agcEnvelope
+            
+            val targetGain = agcTargetLevel.toFloat() / safeEnvelope
+            // Allow up to 30x boost (approx +30dB) for quiet sources
+            val clampedGain = targetGain.coerceIn(0.1f, 30.0f) 
+            
+            for (i in shorts.indices) {
+                 var s = (shorts[i] * clampedGain).toInt()
+                 if (s > 32767) s = 32767
+                 if (s < -32768) s = -32768
+                 shorts[i] = s.toShort()
             }
         }
         
         // 4. Noise Reduction (Placeholder for user requested types)
         if (enableNS) {
              if (nsType != NoiseReductionType.None) {
-                 // Simple low pass filter as placeholder
-                 var prev = 0
-                 for (i in shorts.indices) {
-                     val s = shorts[i]
-                     val filtered = (s + prev) / 2
-                     shorts[i] = filtered.toShort()
-                     prev = s.toInt()
-                 }
+                 // Placeholder: Do nothing for now to preserve quality.
+                 // The previous simple low-pass filter was too aggressive and muffled the sound.
+                 // TODO: Implement real RNNoise or Speexdsp
              }
         }
         

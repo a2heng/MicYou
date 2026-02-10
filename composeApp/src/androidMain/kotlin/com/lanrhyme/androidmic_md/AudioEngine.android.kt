@@ -72,21 +72,35 @@ actual class AudioEngine actual constructor() {
                         
                         val minBufSize = AudioRecord.getMinBufferSize(androidSampleRate, androidChannelConfig, androidAudioFormat)
 
-                        recorder = try {
-                            AudioRecord(
-                                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                                androidSampleRate,
-                                androidChannelConfig,
-                                androidAudioFormat,
-                                minBufSize * 2
-                            )
+                        try {
+                            recorder = try {
+                                // 尝试使用 UNPROCESSED (无处理) 源，以获得最高音质 (Android 7.0+)
+                                // 这能避免系统自带的激进降噪和回声消除破坏音质
+                                AudioRecord(
+                                    MediaRecorder.AudioSource.UNPROCESSED,
+                                    androidSampleRate,
+                                    androidChannelConfig,
+                                    androidAudioFormat,
+                                    minBufSize * 2
+                                )
+                            } catch (e: Exception) {
+                                // 如果不支持 UNPROCESSED，回退到 MIC
+                                println("UNPROCESSED source failed, falling back to MIC: ${e.message}")
+                                AudioRecord(
+                                    MediaRecorder.AudioSource.MIC,
+                                    androidSampleRate,
+                                    androidChannelConfig,
+                                    androidAudioFormat,
+                                    minBufSize * 2
+                                )
+                            }
                         } catch (e: SecurityException) {
                             e.printStackTrace()
                             _state.value = StreamState.Error
                             _lastError.value = "录音权限不足"
                             return@launch
                         }
-
+                        
                         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
                             val msg = "AudioRecord 初始化失败"
                             println(msg)
@@ -151,7 +165,7 @@ actual class AudioEngine actual constructor() {
 
                             if (readBytes > 0) {
                                 // 计算电平
-                                val rms = calculateRMS(audioData)
+                                val rms = calculateRMS(audioData, audioFormat)
                                 _audioLevels.value = rms
 
                                 // 创建数据包
@@ -214,16 +228,45 @@ actual class AudioEngine actual constructor() {
         // Android 端无需处理，功能仅存在于桌面端
     }
     
-    private fun calculateRMS(buffer: ByteArray): Float {
+    private fun calculateRMS(buffer: ByteArray, format: com.lanrhyme.androidmic_md.AudioFormat): Float {
         var sum = 0.0
-        for (i in 0 until buffer.size step 2) {
-             if (i+1 >= buffer.size) break
-             val sample = ((buffer[i+1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)).toShort()
-             sum += sample * sample
+        var sampleCount = 0
+
+        when (format) {
+            com.lanrhyme.androidmic_md.AudioFormat.PCM_FLOAT -> {
+                sampleCount = buffer.size / 4
+                for (i in 0 until sampleCount) {
+                     val byteIndex = i * 4
+                     val bits = (buffer[byteIndex].toInt() and 0xFF) or
+                                ((buffer[byteIndex + 1].toInt() and 0xFF) shl 8) or
+                                ((buffer[byteIndex + 2].toInt() and 0xFF) shl 16) or
+                                ((buffer[byteIndex + 3].toInt() and 0xFF) shl 24)
+                     val sample = Float.fromBits(bits)
+                     sum += sample * sample
+                }
+            }
+            com.lanrhyme.androidmic_md.AudioFormat.PCM_8BIT -> {
+                sampleCount = buffer.size
+                for (i in 0 until sampleCount) {
+                    // 8-bit PCM unsigned 0-255 -> center 128
+                    val sample = (buffer[i].toInt() and 0xFF) - 128
+                    val normalized = sample / 128.0
+                    sum += normalized * normalized
+                }
+            }
+            else -> { // 16-bit
+                sampleCount = buffer.size / 2
+                for (i in 0 until sampleCount) {
+                     val byteIndex = i * 2
+                     val sample = ((buffer[byteIndex+1].toInt() shl 8) or (buffer[byteIndex].toInt() and 0xFF)).toShort()
+                     val normalized = sample / 32768.0
+                     sum += normalized * normalized
+                }
+            }
         }
-        val mean = sum / (buffer.size / 2)
-        val root = kotlin.math.sqrt(mean)
-        return (root / 32768.0).toFloat().coerceIn(0f, 1f)
+        
+        val mean = if (sampleCount > 0) sum / sampleCount else 0.0
+        return kotlin.math.sqrt(mean).toFloat().coerceIn(0f, 1f)
     }
 
     actual fun stop() {

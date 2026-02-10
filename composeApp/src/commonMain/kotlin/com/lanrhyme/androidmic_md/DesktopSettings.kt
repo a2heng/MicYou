@@ -293,7 +293,7 @@ fun DesktopSettings(
                             Slider(
                                 value = state.amplification,
                                 onValueChange = { viewModel.setAmplification(it) },
-                                valueRange = 0.0f..10.0f
+                                valueRange = 0.0f..30.0f
                             )
                         }
                     }
