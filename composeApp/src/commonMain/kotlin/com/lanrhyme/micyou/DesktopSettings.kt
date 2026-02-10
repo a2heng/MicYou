@@ -402,7 +402,7 @@ fun SettingsContent(section: SettingsSection, viewModel: MainViewModel) {
                                 }
                                 item {
                                     Text("AndroidMic", style = MaterialTheme.typography.titleSmall)
-                                    Text("https://github.com/mhuth/AndroidMic", style = MaterialTheme.typography.bodySmall)
+                                    Text("https://github.com/teamclouday/AndroidMic", style = MaterialTheme.typography.bodySmall)
                                 }
                                 item {
                                     Text("JetBrains Compose Multiplatform", style = MaterialTheme.typography.titleSmall)

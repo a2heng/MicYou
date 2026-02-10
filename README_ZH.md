@@ -10,7 +10,7 @@
 
 MicYou 是一款强大的工具，可以将您的 Android 设备变成 PC 的高质量无线麦克风，于 Kotlin Multiplatform 和 Jetpack Compose/Material 3 构建
 
-本项目基于 [AndroidMic](https://github.com/team-br/AndroidMic) 开发
+本项目基于 [AndroidMic](https://github.com/teamclouday/AndroidMic) 开发
 
 ## 主要功能
 
