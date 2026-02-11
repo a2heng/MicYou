@@ -43,14 +43,11 @@ jobs:
     - name: Upload Android Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: android-artifacts
+        name: android-release-apk
         path: composeApp/build/outputs/apk/release/*.apk
 
-  build-desktop:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  build-windows:
+    runs-on: windows-latest
     steps:
     - uses: actions/checkout@v4
     - name: set up JDK 17
@@ -60,49 +57,26 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    - name: Grant execute permission for gradlew
-      if: runner.os != 'Windows'
-      run: chmod +x gradlew
+    - name: Build Windows MSI
+      run: ./gradlew :composeApp:packageMsi
 
-    - name: Build Desktop App
-      run: ./gradlew :composeApp:packageDistributionForCurrentOS
-
-    - name: Upload Desktop Artifacts
+    - name: Upload Windows Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: desktop-artifacts-${{ matrix.os }}
-        path: composeApp/build/compose/binaries/main/*/*
+        name: windows-msi
+        path: composeApp/build/compose/binaries/main/msi/*.msi
 
   release:
-    needs: [build-android, build-desktop]
+    needs: [build-android, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Download Android Artifacts
+      - name: Download All Artifacts
         uses: actions/download-artifact@v4
         with:
-          name: android-artifacts
-          path: release-artifacts
-
-      - name: Download Desktop Artifacts (Ubuntu)
-        uses: actions/download-artifact@v4
-        with:
-          name: desktop-artifacts-ubuntu-latest
-          path: release-artifacts
-
-      - name: Download Desktop Artifacts (Windows)
-        uses: actions/download-artifact@v4
-        with:
-          name: desktop-artifacts-windows-latest
-          path: release-artifacts
-
-      - name: Download Desktop Artifacts (macOS)
-        uses: actions/download-artifact@v4
-        with:
-          name: desktop-artifacts-macos-latest
           path: release-artifacts
 
       - name: Get Last Contributor
@@ -122,7 +96,8 @@ jobs:
       - name: Create Tag
         id: tag
         run: |
-          TAG_NAME="v$(date +'%Y.%m.%d-%H%M')"
+          VERSION=$(grep "project.version=" gradle.properties | cut -d'=' -f2)
+          TAG_NAME="v$VERSION-$(date +'%Y%m%d-%H%M')"
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           git tag $TAG_NAME
           git push origin $TAG_NAME

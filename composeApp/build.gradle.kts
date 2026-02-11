@@ -75,8 +75,8 @@ android {
         applicationId = "com.lanrhyme.micyou"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = project.property("project.version.code").toString().toInt()
+        versionName = project.property("project.version").toString()
     }
     
     signingConfigs {
@@ -122,9 +122,13 @@ compose.desktop {
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
-            packageName = "com.lanrhyme.micyou"
-            packageVersion = "1.0.0"
-            windows { iconFile.set(file("src/commonMain/composeResources/drawable/icon.ico"))}
+            packageName = project.property("project.name").toString()
+            packageVersion = project.property("project.version").toString()
+            windows {
+                iconFile.set(file("src/commonMain/composeResources/drawable/icon256.ico"))
+                // menuGroup = "MicYou"
+                // upgradeUuid = "..."
+            }
         }
     }
 }
