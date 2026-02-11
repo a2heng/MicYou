@@ -35,6 +35,7 @@ data class AppStrings(
     val start: String,
     val stop: String,
     val waitAdb: String,
+    val usbAdbReverseHint: String,
     
     // Settings
     val generalSection: String,
@@ -108,6 +109,7 @@ val EnStrings = AppStrings(
     start = "Start",
     stop = "Stop",
     waitAdb = "Waiting for ADB connection...",
+    usbAdbReverseHint = "Run on PC:",
     
     generalSection = "General",
     appearanceSection = "Appearance",
@@ -178,6 +180,7 @@ val ZhStrings = AppStrings(
     start = "开始",
     stop = "停止",
     waitAdb = "等待 ADB 连接...",
+    usbAdbReverseHint = "在电脑端执行：",
     
     generalSection = "通用",
     appearanceSection = "外观",

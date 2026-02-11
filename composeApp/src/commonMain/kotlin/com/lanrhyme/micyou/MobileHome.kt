@@ -128,8 +128,8 @@ fun MobileHome(viewModel: MainViewModel) {
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (isClient) {
                              OutlinedTextField(
-                                value = state.ipAddress,
-                                onValueChange = { viewModel.setIp(it) },
+                                value = if (state.mode == ConnectionMode.Usb) "127.0.0.1" else state.ipAddress,
+                                onValueChange = { if (state.mode != ConnectionMode.Usb) viewModel.setIp(it) },
                                 label = {
                                     Text(
                                         when (state.mode) {
@@ -142,7 +142,8 @@ fun MobileHome(viewModel: MainViewModel) {
                                 modifier = if (state.mode == ConnectionMode.Bluetooth) Modifier.fillMaxWidth() else Modifier.weight(1f),
                                 singleLine = true,
                                 shape = RoundedCornerShape(12.dp),
-                                textStyle = MaterialTheme.typography.bodyMedium
+                                textStyle = MaterialTheme.typography.bodyMedium,
+                                readOnly = state.mode == ConnectionMode.Usb
                             )
                         }
                         if (state.mode != ConnectionMode.Bluetooth) {
@@ -155,6 +156,26 @@ fun MobileHome(viewModel: MainViewModel) {
                                 shape = RoundedCornerShape(12.dp),
                                 textStyle = MaterialTheme.typography.bodyMedium
                             )
+                        }
+                    }
+
+                    if (isClient && state.mode == ConnectionMode.Usb) {
+                        val portForAdb = state.port.toIntOrNull()?.takeIf { it in 1..65535 } ?: 6000
+                        val cmd = "adb reverse tcp:$portForAdb tcp:$portForAdb"
+
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = strings.usbAdbReverseHint,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            SelectionContainer {
+                                Text(
+                                    text = cmd,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                 }

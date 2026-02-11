@@ -236,8 +236,21 @@ class MainViewModel : ViewModel() {
     }
 
     fun setMode(mode: ConnectionMode) {
-        _uiState.update { it.copy(mode = mode) }
+        val platformType = getPlatform().type
+        val current = _uiState.value
+
+        val updatedPort = if (platformType == PlatformType.Android && mode == ConnectionMode.Usb) {
+            val parsed = current.port.toIntOrNull()
+            if (parsed == null || parsed <= 0) "6000" else current.port
+        } else {
+            current.port
+        }
+
+        _uiState.update { it.copy(mode = mode, port = updatedPort) }
         settings.putString("connection_mode", mode.name)
+        if (updatedPort != current.port) {
+            settings.putString("port", updatedPort)
+        }
     }
     
     fun setIp(ip: String) {

@@ -11,6 +11,7 @@ import io.ktor.network.sockets.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -96,7 +97,7 @@ actual class AudioEngine actual constructor() {
                 CoroutineScope(Dispatchers.IO).launch {
                     var socket: Socket? = null
                     var recorder: AudioRecord? = null
-                    sendChannel = Channel(Channel.UNLIMITED)
+                    sendChannel = Channel(capacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
                     
                     // 连接抽象
                     var input: ByteReadChannel
@@ -180,7 +181,8 @@ actual class AudioEngine actual constructor() {
                             
                         } else {
                             val socketBuilder = aSocket(selectorManager)
-                            val socket = socketBuilder.tcp().connect(ip, port)
+                            val targetIp = if (mode == ConnectionMode.Usb) "127.0.0.1" else ip
+                            val socket = socketBuilder.tcp().connect(targetIp, port)
                             input = socket.openReadChannel()
                             output = socket.openWriteChannel(autoFlush = true)
                             closeConnection = { socket.close() }

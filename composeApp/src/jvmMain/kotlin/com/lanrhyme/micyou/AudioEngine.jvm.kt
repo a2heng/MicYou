@@ -16,6 +16,8 @@ import kotlinx.serialization.*
 import java.net.BindException
 import java.io.EOFException
 import java.io.IOException
+import java.io.File
+import java.util.concurrent.TimeUnit
 import javax.sound.sampled.*
 import kotlin.math.*
 import java.nio.ByteBuffer
@@ -96,6 +98,10 @@ actual class AudioEngine actual constructor() {
     private var dereverbBufferRight: IntArray? = null
     private var dereverbIndex: Int = 0
     private var lastProcessedChannelCount: Int = -1
+    private var scratchShorts: ShortArray = ShortArray(0)
+    private var scratchResultBuffer: ByteArray = ByteArray(0)
+    private var rnnoiseFrameLeft: ShortArray = ShortArray(0)
+    private var rnnoiseFrameRight: ShortArray = ShortArray(0)
 
     actual val installProgress: Flow<String?> = VBCableManager.installProgress
     
@@ -194,6 +200,18 @@ actual class AudioEngine actual constructor() {
                             selectorManager = SelectorManager(Dispatchers.IO)
                             
                             try {
+                                if (mode == ConnectionMode.Usb) {
+                                    try {
+                                        runAdbReverse(port)
+                                    } catch (e: Exception) {
+                                        if (isActive) {
+                                            val cmd = "adb reverse tcp:$port tcp:$port"
+                                            _state.value = StreamState.Error
+                                            _lastError.value = "自动执行 ADB 端口映射失败: ${e.message}\n请在电脑端执行：$cmd"
+                                        }
+                                        return@launch
+                                    }
+                                }
                                 serverSocket = aSocket(selectorManager!!).tcp().bind(port = port)
                                 val msg = "监听端口 $port"
                                 println(msg)
@@ -357,7 +375,9 @@ actual class AudioEngine actual constructor() {
                                     isUsingCable = false
                                 }
 
-                                monitoringLine?.open(audioFormat)
+                                val bytesPerSecond = (audioPacket.sampleRate * audioPacket.channelCount * 2).coerceAtLeast(1)
+                                val bufferSizeBytes = (bytesPerSecond / 5).coerceIn(8192, 131072)
+                                monitoringLine?.open(audioFormat, bufferSizeBytes)
                                 monitoringLine?.start()
                             }
 
@@ -459,11 +479,19 @@ actual class AudioEngine actual constructor() {
             dereverbIndex = 0
         }
         // 转换为 ShortArray 进行处理
-        val shorts: ShortArray
+        val shortsSize = when (format) {
+            4, 32 -> buffer.size / 4
+            3, 8 -> buffer.size
+            else -> buffer.size / 2
+        }
+        if (shortsSize <= 0) return null
+        if (scratchShorts.size != shortsSize) {
+            scratchShorts = ShortArray(shortsSize)
+        }
+        val shorts = scratchShorts
         
         when (format) {
             4, 32 -> { // PCM_FLOAT（32 位浮点数）
-                shorts = ShortArray(buffer.size / 4)
                 for (i in shorts.indices) {
                     val byteIndex = i * 4
                     // 小端序
@@ -477,7 +505,6 @@ actual class AudioEngine actual constructor() {
                 }
             }
             3, 8 -> { // PCM_8BIT（无符号 8 位）
-                 shorts = ShortArray(buffer.size)
                  for (i in shorts.indices) {
                      // 8 位 PCM 通常是无符号 0-255，128 为 0
                      val sample = (buffer[i].toInt() and 0xFF) - 128
@@ -485,7 +512,6 @@ actual class AudioEngine actual constructor() {
                  }
             }
             else -> { // PCM_16BIT（默认）
-                shorts = ShortArray(buffer.size / 2)
                 for (i in shorts.indices) {
                      val byteIndex = i * 2
                      val sample = (buffer[byteIndex].toInt() and 0xFF) or
@@ -509,8 +535,10 @@ actual class AudioEngine actual constructor() {
             val frameCount = framesPerChannel / frameSize
 
             if (frameCount > 0 && (channelCount == 1 || channelCount == 2)) {
-                val left = ShortArray(frameSize)
-                val right = if (channelCount == 2) ShortArray(frameSize) else null
+                if (rnnoiseFrameLeft.size != frameSize) rnnoiseFrameLeft = ShortArray(frameSize)
+                if (channelCount == 2 && rnnoiseFrameRight.size != frameSize) rnnoiseFrameRight = ShortArray(frameSize)
+                val left = rnnoiseFrameLeft
+                val right = if (channelCount == 2) rnnoiseFrameRight else null
 
                 var probSum = 0f
                 var probN = 0
@@ -631,20 +659,91 @@ actual class AudioEngine actual constructor() {
         }
 
         // Convert back to ByteArray
-        val resultBuffer = ByteArray(processedShorts.size * 2)
+        val neededBytes = processedShorts.size * 2
+        if (scratchResultBuffer.size != neededBytes) {
+            scratchResultBuffer = ByteArray(neededBytes)
+        }
+        val resultBuffer = scratchResultBuffer
         ByteBuffer.wrap(resultBuffer).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(processedShorts)
         return resultBuffer
     }
 
+    private fun adbExecutableCandidates(): List<String> {
+        val isWindows = System.getProperty("os.name")?.lowercase()?.contains("win") == true
+        val exe = if (isWindows) "adb.exe" else "adb"
+
+        val candidates = LinkedHashSet<String>()
+        candidates.add("adb")
+
+        val sdkRoot = System.getenv("ANDROID_SDK_ROOT") ?: System.getenv("ANDROID_HOME")
+        if (!sdkRoot.isNullOrBlank()) {
+            candidates.add(File(sdkRoot, "platform-tools/$exe").absolutePath)
+        }
+
+        val localAppData = System.getenv("LOCALAPPDATA")
+        if (!localAppData.isNullOrBlank()) {
+            candidates.add(File(localAppData, "Android/Sdk/platform-tools/$exe").absolutePath)
+        }
+
+        val userHome = System.getProperty("user.home")
+        if (!userHome.isNullOrBlank() && isWindows) {
+            candidates.add(File(userHome, "AppData/Local/Android/Sdk/platform-tools/$exe").absolutePath)
+        }
+
+        return candidates.toList()
+    }
+
+    private fun runAdbReverse(port: Int) {
+        val candidates = adbExecutableCandidates()
+        var lastError: Exception? = null
+
+        for (adb in candidates) {
+            val adbFile = File(adb)
+            if (adb != "adb" && !adbFile.exists()) continue
+
+            try {
+                val process = ProcessBuilder(
+                    adb,
+                    "reverse",
+                    "tcp:$port",
+                    "tcp:$port"
+                ).redirectErrorStream(true).start()
+
+                val finished = process.waitFor(6, TimeUnit.SECONDS)
+                if (!finished) {
+                    process.destroy()
+                    throw IOException("ADB 命令执行超时")
+                }
+
+                val output = process.inputStream.bufferedReader().readText().trim()
+                val code = process.exitValue()
+                if (code != 0) {
+                    val msg = if (output.isNotBlank()) output else "exitCode=$code"
+                    throw IOException(msg)
+                }
+
+                return
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+
+        throw lastError ?: IOException("未找到 adb")
+    }
+
     private fun calculateRMS(buffer: ByteArray): Float {
         var sum = 0.0
-        val shorts = ShortArray(buffer.size / 2)
-        ByteBuffer.wrap(buffer).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
-        
-        for (sample in shorts) {
+        var count = 0
+        var i = 0
+        while (i + 1 < buffer.size) {
+            val lo = buffer[i].toInt() and 0xFF
+            val hi = buffer[i + 1].toInt()
+            val sample = (hi shl 8) or lo
             val normalized = sample / 32768.0
             sum += normalized * normalized
+            count++
+            i += 2
         }
-        return if (shorts.isNotEmpty()) Math.sqrt(sum / shorts.size).toFloat() else 0f
+        return if (count > 0) kotlin.math.sqrt(sum / count.toDouble()).toFloat() else 0f
     }
 }
