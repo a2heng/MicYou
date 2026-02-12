@@ -113,19 +113,20 @@ fun DesktopHome(
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("MicYou Desktop", style = MaterialTheme.typography.titleMedium)
-                        SelectionContainer {
-                            Box {
+                        Box {
                             var showIpList by remember { mutableStateOf(false) }
                             val currentIps = remember(showIpList) { 
                                 if (showIpList) platform.ipAddresses else emptyList() 
                             }
                             
-                            Text(
-                                "${strings.ipLabel}${platform.ipAddress}", 
-                                style = MaterialTheme.typography.bodySmall, 
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.clickable { showIpList = true }
-                            )
+                            SelectionContainer {
+                                Text(
+                                    "${strings.ipLabel}${platform.ipAddress}", 
+                                    style = MaterialTheme.typography.bodySmall, 
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.clickable { showIpList = true }
+                                )
+                            }
                             
                             DropdownMenu(
                                 expanded = showIpList,
@@ -139,7 +140,6 @@ fun DesktopHome(
                                     )
                                 }
                             }
-                        }
                         }
                     }
 
