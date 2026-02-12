@@ -414,6 +414,12 @@ actual class AudioEngine actual constructor() {
                                 monitoringLine?.start()
                             }
 
+                            // 如果积压数据过多（超过5个包），直接丢弃当前包以追赶进度
+                            // input.availableForRead 表示通道中缓冲的字节数
+                            if (input.availableForRead > length * 5) {
+                                continue
+                            }
+
                             val processedBuffer = processAudio(audioPacket.buffer, audioPacket.audioFormat, audioPacket.channelCount)
 
                             if (processedBuffer != null) {
@@ -791,19 +797,19 @@ actual class AudioEngine actual constructor() {
         // 1. 如果误差非常大（> 200ms），使用更激进的比例
         // 2. 如果误差较小，使用 PI 控制
         
-        if (errorMs > 300) {
+        if (errorMs > 100) {
             // 严重积压，快速追赶
             // 1.05x ~ 1.1x
-            return 1.08 to currentIntegral
+            return 1.10 to currentIntegral
         } else if (errorMs < -100) {
             // 严重欠载（几乎不可能发生，除非网络断流）
             return 0.95 to currentIntegral
         }
         
         // 正常范围内的 PI 控制
-        val kP = 0.00005 // 增大 P
-        val kI = 0.0000005 // 增大 I
-        val maxAdjust = 0.03 // 增大调节范围到 3%
+        val kP = 0.0002 // 增大 P
+        val kI = 0.000002 // 增大 I
+        val maxAdjust = 0.10 // 增大调节范围到 10%
         
         var integral = (currentIntegral + errorMs).coerceIn(-10000.0, 10000.0)
         val adjust = (errorMs * kP + integral * kI).coerceIn(-maxAdjust, maxAdjust)
