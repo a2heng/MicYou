@@ -136,8 +136,8 @@ jobs:
       run: |
         mkdir -p ci-artifacts
         # 查找DEB和RPM文件
-        DEB_FILE=$(ls composeApp/build/compose/binaries/main/app/*.deb 2>/dev/null | head -n 1)
-        RPM_FILE=$(ls composeApp/build/compose/binaries/main/app/*.rpm 2>/dev/null | head -n 1)
+        DEB_FILE=$(ls composeApp/build/compose/binaries/main/deb/*.deb 2>/dev/null | head -n 1)
+        RPM_FILE=$(ls composeApp/build/compose/binaries/main/rpm/*.rpm 2>/dev/null | head -n 1)
         
         if [ -f "$DEB_FILE" ]; then
           cp "$DEB_FILE" "ci-artifacts/MicYou-Linux-${{ steps.version.outputs.version }}.deb"
