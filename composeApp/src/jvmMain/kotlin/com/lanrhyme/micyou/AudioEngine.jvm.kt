@@ -15,6 +15,7 @@ import kotlinx.serialization.protobuf.*
 import kotlinx.serialization.*
 import java.net.BindException
 import java.io.IOException
+import java.io.EOFException
 import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.sound.sampled.*
@@ -116,6 +117,9 @@ actual class AudioEngine actual constructor() {
     private var resamplePrevFrame: ShortArray = ShortArray(0)
     private var scratchResampledShorts: ShortArray = ShortArray(0)
 
+    // 存储原始音频输出设备（用于Linux平台恢复）
+    private var originalDefaultSink: String? = null
+
     actual val installProgress: Flow<String?> = VBCableManager.installProgress
     
     actual suspend fun installDriver() {
@@ -158,31 +162,31 @@ actual class AudioEngine actual constructor() {
         audioFormat: AudioFormat
     ) {
         if (isClient) return 
-        
-        _lastError.value = null // 清除之前的错误
-        _state.value = StreamState.Connecting // 立即切换到连接中状态
-
         Logger.i("AudioEngine", "Starting JVM AudioEngine: mode=$mode, port=$port, sampleRate=${sampleRate.value}, channels=${channelCount.label}, format=${audioFormat.label}")
         
+        // 在Linux平台重定向音频输出到虚拟设备
+        if (PlatformUtils.isLinux) {
+            originalDefaultSink = PlatformUtils.getDefaultSink()
+            Logger.i("AudioEngine", "Linux平台：保存原始默认音频输出设备: $originalDefaultSink")
+            
+            val success = PlatformUtils.redirectAudioToVirtualDevice()
+            if (success) {
+                Logger.i("AudioEngine", "成功重定向音频输出到虚拟设备")
+            } else {
+                Logger.w("AudioEngine", "音频重定向失败，可能影响内录功能")
+            }
+        }
+        
+        _lastError.value = null // 清除之前的错误
         val jobToJoin = startStopMutex.withLock {
             val currentJob = job
             if (currentJob != null && !currentJob.isCompleted) {
                 Logger.w("AudioEngine", "AudioEngine already running, ignoring start request")
                 null
             } else {
+                _state.value = StreamState.Connecting
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
-                        if (getPlatform().type == PlatformType.Desktop) {
-                            // 在后台线程异步切换麦克风，不阻塞连接逻辑的初始化
-                            launch {
-                                try {
-                                    VBCableManager.setSystemDefaultMicrophone(toCable = true)
-                                } catch (e: Exception) {
-                                    Logger.e("AudioEngine", "Failed to switch microphone", e)
-                                }
-                            }
-                        }
-
                         if (mode == ConnectionMode.Bluetooth) {
                             Logger.i("AudioEngine", "Starting Bluetooth server")
                             while (isActive) {
@@ -230,59 +234,15 @@ actual class AudioEngine actual constructor() {
                                              _state.value = StreamState.Error
                                              _lastError.value = "蓝牙服务错误: ${e.message}. 正在尝试重启服务..."
                                         }
-                                        
-                                        // Cleanup before retry
-                                        try {
-                                            btNotifier?.close()
-                                        } catch (ex: Exception) {}
-                                        btNotifier = null
-                                        
-                                        delay(3000) // Wait before retrying
                                     }
                                 }
                             }
                         } else {
-                            // TCP Logic
-                            val platform = getPlatform()
-                            Logger.i("AudioEngine", "Starting TCP server on port $port. Available IPs: ${platform.ipAddresses.joinToString(", ")}")
-                            selectorManager = SelectorManager(Dispatchers.IO)
-                            
+                            // TCP server
                             try {
-                                if (mode == ConnectionMode.Usb) {
-                                    try {
-                                        Logger.d("AudioEngine", "Running adb reverse tcp:$port tcp:$port")
-                                        runAdbReverse(port)
-                                        Logger.i("AudioEngine", "ADB reverse successful")
-                                    } catch (e: Exception) {
-                                        if (isActive) {
-                                            val cmd = "adb reverse tcp:$port tcp:$port"
-                                            Logger.e("AudioEngine", "ADB reverse failed", e)
-                                            _state.value = StreamState.Error
-                                            _lastError.value = "自动执行 ADB 端口映射失败: ${e.message}\n请在电脑端执行：$cmd"
-                                        }
-                                        return@launch
-                                    }
-                                }
-
-                                // 显式检查端口占用情况
-                                try {
-                                    java.net.ServerSocket(port).use { }
-                                } catch (e: java.net.BindException) {
-                                    if (isActive) {
-                                        val msg = "端口 $port 已被占用。请在设置中更改端口或关闭占用该端口的程序。"
-                                        Logger.e("AudioEngine", msg)
-                                        _state.value = StreamState.Error
-                                        _lastError.value = msg
-                                    }
-                                    return@launch
-                                } catch (e: Exception) {
-                                    Logger.w("AudioEngine", "Pre-bind check failed: ${e.message}")
-                                }
-
-                                serverSocket = aSocket(selectorManager!!).tcp().bind("0.0.0.0", port = port) {
-                                    reuseAddress = true
-                                }
-                                Logger.i("AudioEngine", "TCP Server is listening on 0.0.0.0:$port")
+                                selectorManager = SelectorManager(Dispatchers.IO)
+                                serverSocket = aSocket(selectorManager!!).tcp().bind("0.0.0.0", port = port)
+                                Logger.i("AudioEngine", "Listening on port $port (0.0.0.0)")
                                 
                                 while (isActive) {
                                     val socket = serverSocket?.accept() ?: break
@@ -302,9 +262,7 @@ actual class AudioEngine actual constructor() {
                                         }
                                     } finally {
                                         activeSocket = null
-                                        try {
-                                            socket.close()
-                                        } catch (e: Exception) {}
+                                        socket.close()
                                         Logger.i("AudioEngine", "TCP connection closed, waiting for new connection")
                                         _state.value = StreamState.Connecting
                                     }
@@ -384,13 +342,7 @@ actual class AudioEngine actual constructor() {
                 agcEnvelope = 0f
 
                 while (currentCoroutineContext().isActive) {
-                    val magic = try {
-                        input.readInt()
-                    } catch (e: Exception) {
-                        Logger.d("AudioEngine", "Reader loop: connection closed by remote: ${e.message}")
-                        break
-                    }
-                    
+                    val magic = input.readInt()
                     if (magic != PACKET_MAGIC) {
                         var resyncMagic = magic
                         while (currentCoroutineContext().isActive) {
@@ -480,7 +432,8 @@ actual class AudioEngine actual constructor() {
 
                             if (processedBuffer != null) {
                                 // 只有在既没使用虚拟电缆也没开启监听时才静音
-                                if (!isUsingCable && !isMonitoring) {
+                                // 在Linux平台上，音频需要发送到虚拟设备，不应静音
+                                if (!isUsingCable && !isMonitoring && !PlatformUtils.isLinux) {
                                     // Logger.d("AudioEngine", "Silencing buffer: isUsingCable=$isUsingCable, isMonitoring=$isMonitoring")
                                     processedBuffer.fill(0.toByte())
                                 }
@@ -542,13 +495,6 @@ actual class AudioEngine actual constructor() {
 
     actual fun stop() {
          try {
-             if (getPlatform().type == PlatformType.Desktop) {
-                 // 在桌面端停止时恢复默认麦克风 (异步执行避免卡顿)
-                 @OptIn(DelicateCoroutinesApi::class)
-                 GlobalScope.launch(Dispatchers.IO) {
-                     VBCableManager.setSystemDefaultMicrophone(toCable = false)
-                 }
-             }
              job?.cancel()
              job = null
              activeSocket?.close()
@@ -567,12 +513,23 @@ actual class AudioEngine actual constructor() {
              _state.value = StreamState.Idle
          } catch (e: Exception) {
              e.printStackTrace()
+         } finally {
+             // 在Linux平台恢复原始默认音频输出设备
+             if (PlatformUtils.isLinux && originalDefaultSink != null) {
+                 Logger.i("AudioEngine", "Linux平台：恢复原始默认音频输出设备: $originalDefaultSink")
+                 val success = PlatformUtils.restoreDefaultSink(originalDefaultSink)
+                 if (success) {
+                     Logger.i("AudioEngine", "成功恢复原始音频输出设备")
+                 } else {
+                     Logger.w("AudioEngine", "恢复原始音频输出设备失败")
+                 }
+             }
          }
     }
 
     private fun isNormalDisconnect(e: Throwable): Boolean {
         if (e is kotlinx.coroutines.CancellationException) return true
-        if (e is java.io.EOFException) return true
+        if (e is EOFException) return true
         if (e is ClosedReceiveChannelException) return true
         if (e is IOException) {
             val msg = e.message ?: ""

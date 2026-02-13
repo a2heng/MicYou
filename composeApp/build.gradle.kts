@@ -146,7 +146,7 @@ compose.desktop {
         jvmArgs("-Dfile.encoding=UTF-8")
 
         nativeDistributions {
-            targetFormats(TargetFormat.Dmg, TargetFormat.Exe, TargetFormat.Deb)
+            targetFormats(TargetFormat.Dmg, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = project.property("project.name").toString()
             packageVersion = project.property("project.version").toString()
             description = "MicYou Application"
@@ -164,6 +164,9 @@ compose.desktop {
                 upgradeUuid = "f76264ff-05a4-494a-a8fb-7ed3410cb17c"
                 console = false
             }
+            linux {
+        		iconFile.set(project.file("src/commonMain/composeResources/drawable/app_icon.png"))
+    		}
         }
     }
 }

@@ -18,7 +18,7 @@ MicYou 是一款强大的工具，可以将您的 Android 设备变成 PC 的高
 - **音频处理**：内置噪声抑制、自动增益控制 (AGC) 和去混响功能
 - **跨平台支持**：
   - **Android 客户端**：现代 Material 3 界面，支持深色/浅色主题
-  - **桌面端服务端**：支持 Windows接收音频
+  - **桌面端服务端**：支持 Windows/Linux 接收音频
 - **虚拟麦克风**：配合 VB-Cable 可作为系统麦克风输入使用
 - **高度可定制**：支持调整采样率、声道数和音频格式
 
@@ -38,12 +38,15 @@ MicYou 是一款强大的工具，可以将您的 Android 设备变成 PC 的高
 1. 下载并安装 APK 到您的 Android 设备
 2. 确保您的设备与 PC 处于同一网络（Wi-Fi 模式），或通过 USB 连接
 
-### 桌面端
+### Windows
 1. 运行桌面端应用程序
 2. 配置连接模式以匹配 Android 应用
 
+### Linux
+1. 请从源码构建使用
+
 > [!TIP]
-> 遇到问题？请查看：[常见问题](./docs/FAQ.md)
+> 遇到问题？请查看：[常见问题](./docs/FAQ_ZH.md)
 
 ## 源码构建
 
@@ -54,7 +57,7 @@ MicYou 是一款强大的工具，可以将您的 Android 设备变成 PC 的高
 ./gradlew :composeApp:assembleDebug
 ```
 
-**Desktop:**
+**Windows/Linux:**
 ```bash
 ./gradlew :composeApp:run
 ```
@@ -62,4 +65,3 @@ MicYou 是一款强大的工具，可以将您的 Android 设备变成 PC 的高
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=lanrhyme/MicYou&type=Date)](https://star-history.com/#lanrhyme/MicYou&Date)
-

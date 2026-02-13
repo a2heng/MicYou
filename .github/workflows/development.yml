@@ -112,3 +112,50 @@ jobs:
         path: |
           ci-artifacts/MicYou-Win${{ steps.version.outputs.version }}.zip
           ci-artifacts/MicYou-Win${{ steps.version.outputs.version }}-installer.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Read Version
+      id: version
+      run: |
+        VERSION=$(grep "^project.version=" gradle.properties | cut -d'=' -f2 | tr -d '\r')
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+    - name: set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: gradle
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+    - name: Build Linux DEB and RPM packages
+      run: ./gradlew :composeApp:packageDeb :composeApp:packageRpm
+    - name: Prepare Linux Artifacts
+      run: |
+        mkdir -p ci-artifacts
+        # 查找DEB和RPM文件
+        DEB_FILE=$(ls composeApp/build/compose/binaries/main/deb/*.deb 2>/dev/null | head -n 1)
+        RPM_FILE=$(ls composeApp/build/compose/binaries/main/rpm/*.rpm 2>/dev/null | head -n 1)
+        
+        if [ -f "$DEB_FILE" ]; then
+          cp "$DEB_FILE" "ci-artifacts/MicYou-Linux-${{ steps.version.outputs.version }}.deb"
+        else
+          echo "DEB package not found, check build output."
+          exit 1
+        fi
+        
+        if [ -f "$RPM_FILE" ]; then
+          cp "$RPM_FILE" "ci-artifacts/MicYou-Linux-${{ steps.version.outputs.version }}.rpm"
+        else
+          echo "RPM package not found, check build output."
+          exit 1
+        fi
+    - name: Upload Linux Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: MicYou-Linux-${{ steps.version.outputs.version }}
+        path: |
+          ci-artifacts/MicYou-Linux-${{ steps.version.outputs.version }}.deb
+          ci-artifacts/MicYou-Linux-${{ steps.version.outputs.version }}.rpm

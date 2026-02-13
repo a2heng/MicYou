@@ -18,7 +18,7 @@ Based on the [AndroidMic](https://github.com/teamclouday/AndroidMic) project.
 - **Audio Processing**: Built-in Noise Suppression, Auto Gain Control (AGC), and Dereverberation.
 - **Cross-Platform**:
   - **Android Client**: Modern Material 3 interface, dark/light theme support.
-  - **Desktop Server**: Receive audio on Windows.
+  - **Desktop Server**: Receive audio on Windows/Linux.
 - **Virtual Microphone**: Works seamlessly with VB-Cable to act as a system microphone input.
 - **Customizable**: Adjust sample rate, channel count, and audio format.
 
@@ -38,9 +38,12 @@ Based on the [AndroidMic](https://github.com/teamclouday/AndroidMic) project.
 1. Download and install the APK on your Android device.
 2. Ensure your device is on the same network as your PC (for Wi-Fi) or connected via USB.
 
-### Desktop
+### Windows
 1. Run the desktop application.
 2. Configure the connection mode to match the Android app.
+
+### Linux
+1. Please build and use from the source code.
 
 > [!TIP]
 > Having issues? Check out the [FAQ](./docs/FAQ.md)
@@ -54,7 +57,7 @@ This project is built using Kotlin Multiplatform.
 ./gradlew :composeApp:assembleDebug
 ```
 
-**Desktop:**
+**Windows/Linux:**
 ```bash
 ./gradlew :composeApp:run
 ```
@@ -62,4 +65,3 @@ This project is built using Kotlin Multiplatform.
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=lanrhyme/MicYou&type=Date)](https://star-history.com/#lanrhyme/MicYou&Date)
-
