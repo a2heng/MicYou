@@ -243,7 +243,8 @@ actual class AudioEngine actual constructor() {
                             }
                         } else {
                             // TCP Logic
-                            Logger.i("AudioEngine", "Starting TCP server on port $port")
+                            val platform = getPlatform()
+                            Logger.i("AudioEngine", "Starting TCP server on port $port. Available IPs: ${platform.ipAddresses.joinToString(", ")}")
                             selectorManager = SelectorManager(Dispatchers.IO)
                             
                             try {
@@ -262,11 +263,26 @@ actual class AudioEngine actual constructor() {
                                         return@launch
                                     }
                                 }
+
+                                // 显式检查端口占用情况
+                                try {
+                                    java.net.ServerSocket(port).use { }
+                                } catch (e: java.net.BindException) {
+                                    if (isActive) {
+                                        val msg = "端口 $port 已被占用。请在设置中更改端口或关闭占用该端口的程序。"
+                                        Logger.e("AudioEngine", msg)
+                                        _state.value = StreamState.Error
+                                        _lastError.value = msg
+                                    }
+                                    return@launch
+                                } catch (e: Exception) {
+                                    Logger.w("AudioEngine", "Pre-bind check failed: ${e.message}")
+                                }
+
                                 serverSocket = aSocket(selectorManager!!).tcp().bind("0.0.0.0", port = port) {
                                     reuseAddress = true
-                                    // 服务器端也启用 keepAlive
                                 }
-                                Logger.i("AudioEngine", "Listening on port $port (0.0.0.0)")
+                                Logger.i("AudioEngine", "TCP Server is listening on 0.0.0.0:$port")
                                 
                                 while (isActive) {
                                     val socket = serverSocket?.accept() ?: break
@@ -407,6 +423,7 @@ actual class AudioEngine actual constructor() {
                         val audioPacket = wrapper.audioPacket?.audioPacket
                         if (audioPacket != null) {
                             if (monitoringLine == null) {
+                                Logger.d("AudioEngine", "Initializing monitoringLine: SR=${audioPacket.sampleRate}, Channels=${audioPacket.channelCount}")
                                 val audioFormat = javax.sound.sampled.AudioFormat(
                                     audioPacket.sampleRate.toFloat(),
                                     16,
@@ -418,6 +435,8 @@ actual class AudioEngine actual constructor() {
                                 val info = DataLine.Info(SourceDataLine::class.java, audioFormat)
 
                                 val mixers = AudioSystem.getMixerInfo()
+                                Logger.d("AudioEngine", "Found ${mixers.size} mixers: ${mixers.joinToString { it.name }}")
+                                
                                 val cableMixerInfo = mixers
                                     .filter { it.name.contains("CABLE Input", ignoreCase = true) }
                                     .find { mixerInfo ->
@@ -433,9 +452,16 @@ actual class AudioEngine actual constructor() {
                                     val mixer = AudioSystem.getMixer(cableMixerInfo)
                                     monitoringLine = mixer.getLine(info) as SourceDataLine
                                     isUsingCable = true
+                                    Logger.i("AudioEngine", "Using VB-CABLE Input for audio output: ${cableMixerInfo.name}")
                                 } else {
-                                    monitoringLine = AudioSystem.getLine(info) as SourceDataLine
-                                    isUsingCable = false
+                                    Logger.w("AudioEngine", "VB-CABLE Input not found or not supporting format, trying default output")
+                                    try {
+                                        monitoringLine = AudioSystem.getLine(info) as SourceDataLine
+                                        isUsingCable = false
+                                        Logger.i("AudioEngine", "Using default system output")
+                                    } catch (e: Exception) {
+                                        Logger.e("AudioEngine", "Failed to get default system output line", e)
+                                    }
                                 }
 
                                 val bytesPerSecond = (audioPacket.sampleRate * audioPacket.channelCount * 2).coerceAtLeast(1)
@@ -453,11 +479,17 @@ actual class AudioEngine actual constructor() {
                             val processedBuffer = processAudio(audioPacket.buffer, audioPacket.audioFormat, audioPacket.channelCount)
 
                             if (processedBuffer != null) {
+                                // 只有在既没使用虚拟电缆也没开启监听时才静音
                                 if (!isUsingCable && !isMonitoring) {
+                                    // Logger.d("AudioEngine", "Silencing buffer: isUsingCable=$isUsingCable, isMonitoring=$isMonitoring")
                                     processedBuffer.fill(0.toByte())
                                 }
 
-                                monitoringLine?.write(processedBuffer, 0, processedBuffer.size)
+                                try {
+                                    monitoringLine?.write(processedBuffer, 0, processedBuffer.size)
+                                } catch (e: Exception) {
+                                    Logger.e("AudioEngine", "Error writing to monitoringLine", e)
+                                }
 
                                 val rms = calculateRMS(processedBuffer)
                                 _audioLevels.value = rms

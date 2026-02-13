@@ -326,19 +326,19 @@ class MainViewModel : ViewModel() {
         val channelCount = _uiState.value.channelCount
         val audioFormat = _uiState.value.audioFormat
 
-        // Windows 防火墙检查
-        if (!isClient && mode == ConnectionMode.Wifi) {
-            if (!isPortAllowed(port, "TCP")) {
-                Logger.w("MainViewModel", "Port $port is not allowed by firewall")
-                _uiState.update { it.copy(showFirewallDialog = true, pendingFirewallPort = port) }
-                return
-            }
-        }
-
-        // Config is already updated via updateAudioEngineConfig, but we pass params to start just in case or for init
-        updateAudioEngineConfig()
-
         viewModelScope.launch {
+            // Windows 防火墙检查
+            if (!isClient && mode == ConnectionMode.Wifi) {
+                if (!isPortAllowed(port, "TCP")) {
+                    Logger.w("MainViewModel", "Port $port is not allowed by firewall")
+                    _uiState.update { it.copy(showFirewallDialog = true, pendingFirewallPort = port) }
+                    return@launch
+                }
+            }
+
+            // Config is already updated via updateAudioEngineConfig, but we pass params to start just in case or for init
+            updateAudioEngineConfig()
+
             try {
                 audioEngine.start(ip, port, mode, isClient, sampleRate, channelCount, audioFormat)
                 Logger.i("MainViewModel", "Stream started successfully")

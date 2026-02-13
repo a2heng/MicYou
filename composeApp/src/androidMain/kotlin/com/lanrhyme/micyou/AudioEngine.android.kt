@@ -405,7 +405,17 @@ actual class AudioEngine actual constructor() {
                         if (isActive && !isNormalDisconnect(e)) {
                             Logger.e("AudioEngine", "Connection lost", e)
                             _state.value = StreamState.Error
-                            _lastError.value = "连接断开: ${e.message}"
+                            
+                            val errorMsg = when {
+                                e is java.net.ConnectException && e.message?.contains("Connection refused", ignoreCase = true) == true -> 
+                                    "连接被拒绝: 请确保电脑端已开启并处于“连接中”状态，且防火墙已放行 TCP $port 端口。"
+                                e is java.net.SocketTimeoutException -> 
+                                    "连接超时: 请检查网络连接或 IP 地址是否正确。"
+                                e is java.net.NoRouteToHostException ->
+                                    "无法到达主机: 请确保手机和电脑在同一个 Wi-Fi 网络下。"
+                                else -> "连接断开: ${e.message}"
+                            }
+                            _lastError.value = errorMsg
                         }
                     } finally {
                         Logger.d("AudioEngine", "Cleaning up resources")

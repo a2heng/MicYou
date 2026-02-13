@@ -20,7 +20,7 @@ expect fun uninstallVBCable()
 
 expect fun getAppVersion(): String
 
-expect fun isPortAllowed(port: Int, protocol: String): Boolean
+expect suspend fun isPortAllowed(port: Int, protocol: String): Boolean
 expect suspend fun addFirewallRule(port: Int, protocol: String): Result<Unit>
 
 /**
