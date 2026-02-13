@@ -146,7 +146,7 @@ compose.desktop {
         jvmArgs("-Dfile.encoding=UTF-8")
 
         nativeDistributions {
-            targetFormats(TargetFormat.Dmg, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.AppImage)
+            targetFormats(TargetFormat.Dmg, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = project.property("project.name").toString()
             packageVersion = project.property("project.version").toString()
             description = "MicYou Application"

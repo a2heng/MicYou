@@ -116,7 +116,7 @@ jobs:
           ci-artifacts/MicYou-Win-${{ steps.version.outputs.version }}.zip
           ci-artifacts/MicYou-Win-${{ steps.version.outputs.version }}-installer.exe
 
-  # ----------------- 新增 Linux AppImage 构建任务 -----------------
+  # ----------------- Linux DEB/RPM 包构建任务 -----------------
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -134,23 +134,35 @@ jobs:
         cache: gradle
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
-    - name: Build Linux AppImage
-      run: ./gradlew :composeApp:packageDistributionForCurrentOS
-    - name: Prepare Linux Artifact
+    - name: Build Linux DEB and RPM packages
+      run: ./gradlew :composeApp:packageDeb :composeApp:packageRpm
+    - name: Prepare Linux Artifacts
       run: |
         mkdir -p ci-artifacts
-        APPIMAGE=$(ls composeApp/build/compose/binaries/main/app/*.AppImage | head -n 1)
-        if [ -f "$APPIMAGE" ]; then
-          cp "$APPIMAGE" "ci-artifacts/MicYou-Linux-${{ steps.version.outputs.version }}.AppImage"
+        # 查找DEB和RPM文件
+        DEB_FILE=$(ls composeApp/build/compose/binaries/main/app/*.deb 2>/dev/null | head -n 1)
+        RPM_FILE=$(ls composeApp/build/compose/binaries/main/app/*.rpm 2>/dev/null | head -n 1)
+        
+        if [ -f "$DEB_FILE" ]; then
+          cp "$DEB_FILE" "ci-artifacts/MicYou-Linux-${{ steps.version.outputs.version }}.deb"
         else
-          echo "AppImage not found, check build output."
+          echo "DEB package not found, check build output."
+          exit 1
+        fi
+        
+        if [ -f "$RPM_FILE" ]; then
+          cp "$RPM_FILE" "ci-artifacts/MicYou-Linux-${{ steps.version.outputs.version }}.rpm"
+        else
+          echo "RPM package not found, check build output."
           exit 1
         fi
     - name: Upload Linux Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: MicYou-Linux-${{ steps.version.outputs.version }}
-        path: ci-artifacts/MicYou-Linux-${{ steps.version.outputs.version }}.AppImage
+        path: |
+          ci-artifacts/MicYou-Linux-${{ steps.version.outputs.version }}.deb
+          ci-artifacts/MicYou-Linux-${{ steps.version.outputs.version }}.rpm
 
   release:
     # 依赖所有构建任务，新增 build-linux
