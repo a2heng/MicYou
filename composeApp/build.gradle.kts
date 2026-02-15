@@ -251,6 +251,17 @@ tasks.register<GenerateWindowsIconIcoTask>("generateWindowsIconIco") {
 
 tasks.matching { it.name in setOf("createDistributable", "createReleaseDistributable", "packageExe", "packageReleaseExe", "packageWindowsNsis") }
     .configureEach { dependsOn("generateWindowsIconIco") }
+
+// Windows 打包后复制托盘图标 (32x32) 到应用目录
+// 256x256 的图标在 Windows 托盘中无法正常显示，需要使用小尺寸图标
+val copyTrayIcon by tasks.registering(Copy::class) {
+    from("src/commonMain/composeResources/drawable/icon32.ico")
+    into(layout.buildDirectory.dir("compose/binaries/main/app/${project.property("project.name")}"))
+}
+tasks.matching { it.name in setOf("createDistributable", "createReleaseDistributable") }
+    .configureEach {
+        finalizedBy(copyTrayIcon)
+    }
 tasks.matching { it.name == "jvmRun" }.configureEach {
     if (this is org.gradle.process.JavaForkOptions) {
         val tmpDir = layout.buildDirectory.dir("tmp/jvmRun").get().asFile
@@ -262,7 +273,7 @@ tasks.matching { it.name == "jvmRun" }.configureEach {
 }
 
 tasks.register<Zip>("packageWindowsZip") {
-    dependsOn("createDistributable")
+    dependsOn("createDistributable", copyTrayIcon)
 
     val version = project.property("project.version").toString()
     val distDir = layout.buildDirectory.dir("compose/binaries/main/app")
@@ -344,7 +355,7 @@ abstract class PackageWindowsNsisTask @Inject constructor(
 }
 
 tasks.register<PackageWindowsNsisTask>("packageWindowsNsis") {
-    dependsOn("createDistributable")
+    dependsOn("createDistributable", copyTrayIcon)
 
     val appNameValue = project.property("project.name").toString()
     val versionValue = project.property("project.version").toString()

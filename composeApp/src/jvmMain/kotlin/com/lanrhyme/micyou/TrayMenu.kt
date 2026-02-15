@@ -86,32 +86,41 @@ object TrayMenu {
 
     /**
      * 获取默认图标路径
-     * 尝试多个可能的图标路径
+     * 按优先级尝试多个可能的图标路径
      */
     fun getDefaultIconPath(): String {
-        // 尝试从资源文件获取图标
-        val resourcePath = System.getProperty("user.dir") + "/composeApp/src/commonMain/composeResources/drawable/app_icon.png"
-        val resourceFile = File(resourcePath)
-        if (resourceFile.exists()) {
-            return resourceFile.absolutePath
+        val isWindows = System.getProperty("os.name").lowercase().contains("windows")
+        // jpackage 打包后的应用会设置此属性，指向启动器路径
+        val jpackageAppPath = System.getProperty("jpackage.app-path")
+        val jpackageAppDir = jpackageAppPath?.let { File(it).parentFile?.absolutePath }
+        
+        val candidatePaths = if (isWindows) {
+            // Windows 托盘需要小尺寸图标 (32x32)，256x256 会显示为占位符
+            listOfNotNull(
+                jpackageAppDir?.let { "$it\\icon32.ico" },
+                System.getProperty("user.dir") + "\\icon32.ico",
+                System.getProperty("user.dir") + "/composeApp/src/commonMain/composeResources/drawable/icon32.ico",
+                "composeApp/src/commonMain/composeResources/drawable/icon32.ico",
+                "src/commonMain/composeResources/drawable/icon32.ico"
+            )
+        } else {
+            listOfNotNull(
+                "/opt/micyou/lib/MicYou.png",
+                jpackageAppDir?.let { File(it).parentFile?.let { p -> "${p.absolutePath}/lib/MicYou.png" } },
+                System.getProperty("user.dir") + "/composeApp/src/commonMain/composeResources/drawable/app_icon.png",
+                "composeApp/src/commonMain/composeResources/drawable/app_icon.png",
+                "src/commonMain/composeResources/drawable/app_icon.png"
+            )
         }
 
-        // 尝试其他可能的路径
-        val altPaths = listOf(
-            "src/commonMain/composeResources/drawable/app_icon.png",
-            "composeApp/src/commonMain/composeResources/drawable/app_icon.png",
-            "./src/commonMain/composeResources/drawable/app_icon.png"
-        )
-
-        for (path in altPaths) {
+        for (path in candidatePaths) {
             val file = File(path)
             if (file.exists()) {
                 return file.absolutePath
             }
         }
 
-        // 返回默认值
-        return resourcePath
+        return candidatePaths.first()
     }
 
     /**
